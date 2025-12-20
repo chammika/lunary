@@ -1,3 +1,37 @@
 target/
 **/*.swp
 .DS_Store
+
+# IDE and Editor files
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+.vs/
+
+# Build artifacts
+dist/
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# Dependencies
+node_modules/
+vendor/
+.cargo/
+
+# Logs and temp files
+*.log
+*.tmp
+tmp/
+
+# OS files
+Thumbs.db
+*.exe
+
+# Environment
+.env
+.env.local
