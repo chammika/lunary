@@ -22,6 +22,17 @@ macro_rules! dispatch_fn {
     };
 }
 
+macro_rules! parse_common_header {
+    ($self:expr, $data:expr, $pos:expr) => {
+        (|| -> Result<(u16, u16, u64)> {
+            let stock_locate = $self.read_u16($data, $pos)?;
+            let tracking_number = $self.read_u16($data, $pos)?;
+            let timestamp = $self.read_timestamp($data, $pos)?;
+            Ok((stock_locate, tracking_number, timestamp))
+        })()
+    };
+}
+
 #[repr(C, align(64))]
 pub struct Parser {
     buffer: Vec<u8>,
@@ -490,19 +501,18 @@ impl Parser {
 
     #[inline]
     fn parse_system_event(&self, data: &[u8], pos: &mut usize) -> Result<SystemEventMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(SystemEventMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             event_code: self.read_u8(data, pos)? as char,
         })
     }
 
     #[inline]
     fn parse_stock_directory(&self, data: &[u8], pos: &mut usize) -> Result<StockDirectoryMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let stock = self.read_stock(data, pos)?;
         let end = stock.iter().position(|&b| b == b' ').unwrap_or(8);
         std::str::from_utf8(&stock[..end])
@@ -537,9 +547,7 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<StockTradingActionMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let stock = self.read_stock(data, pos)?;
         let end = stock.iter().position(|&b| b == b' ').unwrap_or(8);
         std::str::from_utf8(&stock[..end])
@@ -565,9 +573,7 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<RegShoRestrictionMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let stock = self.read_stock(data, pos)?;
         let end = stock.iter().position(|&b| b == b' ').unwrap_or(8);
         std::str::from_utf8(&stock[..end])
@@ -589,9 +595,7 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<MarketParticipantPositionMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let mpid = self.read_mpid(data, pos)?;
         let end_mpid = mpid.iter().position(|&b| b == b' ').unwrap_or(4);
         std::str::from_utf8(&mpid[..end_mpid])
@@ -622,10 +626,11 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<MwcbDeclineLevelMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(MwcbDeclineLevelMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             level1: self.read_u64(data, pos)?,
             level2: self.read_u64(data, pos)?,
             level3: self.read_u64(data, pos)?,
@@ -634,10 +639,11 @@ impl Parser {
 
     #[inline]
     fn parse_mwcb_status(&self, data: &[u8], pos: &mut usize) -> Result<MwcbStatusMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(MwcbStatusMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             breached_level: self.read_u8(data, pos)? as char,
         })
     }
@@ -648,9 +654,7 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<IpoQuotingPeriodMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let stock = self.read_stock(data, pos)?;
         let end = stock.iter().position(|&b| b == b' ').unwrap_or(8);
         std::str::from_utf8(&stock[..end])
@@ -669,9 +673,7 @@ impl Parser {
 
     #[inline]
     fn parse_add_order(&self, data: &[u8], pos: &mut usize) -> Result<AddOrderMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let order_reference_number = self.read_u64(data, pos)?;
         let buy_sell_indicator = self.read_u8(data, pos)? as char;
         let shares = self.read_u32(data, pos)?;
@@ -698,9 +700,7 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<AddOrderWithMpidMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let order_reference_number = self.read_u64(data, pos)?;
         let buy_sell_indicator = self.read_u8(data, pos)? as char;
         let shares = self.read_u32(data, pos)?;
@@ -730,10 +730,11 @@ impl Parser {
 
     #[inline]
     fn parse_order_executed(&self, data: &[u8], pos: &mut usize) -> Result<OrderExecutedMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(OrderExecutedMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             order_reference_number: self.read_u64(data, pos)?,
             executed_shares: self.read_u32(data, pos)?,
             match_number: self.read_u64(data, pos)?,
@@ -746,10 +747,11 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<OrderExecutedWithPriceMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(OrderExecutedWithPriceMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             order_reference_number: self.read_u64(data, pos)?,
             executed_shares: self.read_u32(data, pos)?,
             match_number: self.read_u64(data, pos)?,
@@ -760,10 +762,11 @@ impl Parser {
 
     #[inline]
     fn parse_order_cancel(&self, data: &[u8], pos: &mut usize) -> Result<OrderCancelMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(OrderCancelMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             order_reference_number: self.read_u64(data, pos)?,
             cancelled_shares: self.read_u32(data, pos)?,
         })
@@ -771,20 +774,22 @@ impl Parser {
 
     #[inline]
     fn parse_order_delete(&self, data: &[u8], pos: &mut usize) -> Result<OrderDeleteMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(OrderDeleteMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             order_reference_number: self.read_u64(data, pos)?,
         })
     }
 
     #[inline]
     fn parse_order_replace(&self, data: &[u8], pos: &mut usize) -> Result<OrderReplaceMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(OrderReplaceMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             original_order_reference_number: self.read_u64(data, pos)?,
             new_order_reference_number: self.read_u64(data, pos)?,
             shares: self.read_u32(data, pos)?,
@@ -794,9 +799,7 @@ impl Parser {
 
     #[inline]
     fn parse_trade(&self, data: &[u8], pos: &mut usize) -> Result<TradeMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let order_reference_number = self.read_u64(data, pos)?;
         let buy_sell_indicator = self.read_u8(data, pos)? as char;
         let shares = self.read_u32(data, pos)?;
