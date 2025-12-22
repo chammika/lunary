@@ -49,3 +49,5 @@ pub use zerocopy::{
     IntoOwned, MessageHeader, MessageVisitor, Mpid, ParseMessage, Stock, ZeroCopyBatchProcessor,
     ZeroCopyIterator, ZeroCopyMessage, ZeroCopyParser,
 };
+
+pub mod bench;
