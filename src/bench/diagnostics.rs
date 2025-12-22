@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::{
-    compute_checksum_simd, scan_boundaries_auto, validate_message_stream_simd, BatchProcessor,
-    CacheStats, ParallelParser, ParseDiagnosticsExt, Parser, SimdDiagnostics, SimdLevel,
-    WorkStealingParser, ZeroCopyParser,
+    BatchProcessor, CacheStats, ParallelParser, ParseDiagnosticsExt, Parser, SimdDiagnostics,
+    SimdLevel, WorkStealingParser, ZeroCopyParser, compute_checksum_simd, scan_boundaries_auto,
+    validate_message_stream_simd,
 };
 
 use super::utils::split_into_chunks;

@@ -11,7 +11,9 @@ pub enum ParseError {
     #[error("Invalid header: {reason}")]
     InvalidHeader { reason: &'static str },
 
-    #[error("Message length mismatch: declared {declared}, expected {expected} for type 0x{msg_type:02X}")]
+    #[error(
+        "Message length mismatch: declared {declared}, expected {expected} for type 0x{msg_type:02X}"
+    )]
     LengthMismatch {
         msg_type: u8,
         declared: usize,

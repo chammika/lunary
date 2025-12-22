@@ -683,8 +683,8 @@ pub fn prefetch_avx512(data: &[u8], offset: usize) {
 ///
 /// Caller must ensure `pos + 8 <= data.len()`.
 pub unsafe fn read_u64_unchecked(data: &[u8], pos: usize) -> u64 {
-    let ptr = data.as_ptr().add(pos);
-    u64::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 8]))
+    let ptr = unsafe { data.as_ptr().add(pos) };
+    u64::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 8]) })
 }
 
 #[inline(always)]
@@ -692,8 +692,8 @@ pub unsafe fn read_u64_unchecked(data: &[u8], pos: usize) -> u64 {
 ///
 /// Caller must ensure `pos + 4 <= data.len()`.
 pub unsafe fn read_u32_unchecked(data: &[u8], pos: usize) -> u32 {
-    let ptr = data.as_ptr().add(pos);
-    u32::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 4]))
+    let ptr = unsafe { data.as_ptr().add(pos) };
+    u32::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 4]) })
 }
 
 #[inline(always)]
@@ -701,8 +701,8 @@ pub unsafe fn read_u32_unchecked(data: &[u8], pos: usize) -> u32 {
 ///
 /// Caller must ensure `pos + 2 <= data.len()`.
 pub unsafe fn read_u16_unchecked(data: &[u8], pos: usize) -> u16 {
-    let ptr = data.as_ptr().add(pos);
-    u16::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 2]))
+    let ptr = unsafe { data.as_ptr().add(pos) };
+    u16::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 2]) })
 }
 
 #[inline(always)]
@@ -710,13 +710,13 @@ pub unsafe fn read_u16_unchecked(data: &[u8], pos: usize) -> u16 {
 ///
 /// Caller must ensure `pos + 6 <= data.len()`.
 pub unsafe fn read_timestamp_unchecked(data: &[u8], pos: usize) -> u64 {
-    let ptr = data.as_ptr().add(pos);
-    let b0 = *ptr as u64;
-    let b1 = *ptr.add(1) as u64;
-    let b2 = *ptr.add(2) as u64;
-    let b3 = *ptr.add(3) as u64;
-    let b4 = *ptr.add(4) as u64;
-    let b5 = *ptr.add(5) as u64;
+    let ptr = unsafe { data.as_ptr().add(pos) };
+    let b0 = unsafe { *ptr } as u64;
+    let b1 = unsafe { *ptr.add(1) } as u64;
+    let b2 = unsafe { *ptr.add(2) } as u64;
+    let b3 = unsafe { *ptr.add(3) } as u64;
+    let b4 = unsafe { *ptr.add(4) } as u64;
+    let b5 = unsafe { *ptr.add(5) } as u64;
     (b0 << 40) | (b1 << 32) | (b2 << 24) | (b3 << 16) | (b4 << 8) | b5
 }
 
@@ -773,15 +773,17 @@ pub fn scan_message_lengths_simd(data: &[u8], max_messages: usize) -> Vec<(usize
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 #[target_feature(enable = "sse2")]
 unsafe fn memcpy_nontemporal_sse2(dst: *mut u8, src: *const u8, len: usize) {
-    let mut i = 0;
-    while i + 16 <= len {
-        let v = _mm_loadu_si128(src.add(i) as *const __m128i);
-        _mm_stream_si128(dst.add(i) as *mut __m128i, v);
-        i += 16;
-    }
-    _mm_sfence();
-    if i < len {
-        std::ptr::copy_nonoverlapping(src.add(i), dst.add(i), len - i);
+    unsafe {
+        let mut i = 0;
+        while i + 16 <= len {
+            let v = _mm_loadu_si128(src.add(i) as *const __m128i);
+            _mm_stream_si128(dst.add(i) as *mut __m128i, v);
+            i += 16;
+        }
+        _mm_sfence();
+        if i < len {
+            std::ptr::copy_nonoverlapping(src.add(i), dst.add(i), len - i);
+        }
     }
 }
 
@@ -794,11 +796,13 @@ unsafe fn memcpy_nontemporal_sse2(dst: *mut u8, src: *const u8, len: usize) {
 /// - `dst` is valid for writes of `len` bytes
 /// - the regions do not overlap
 pub unsafe fn memcpy_nontemporal(dst: *mut u8, src: *const u8, len: usize) {
-    if is_simd_available() && len >= 64 {
-        memcpy_nontemporal_sse2(dst, src, len);
-        return;
+    unsafe {
+        if is_simd_available() && len >= 64 {
+            memcpy_nontemporal_sse2(dst, src, len);
+            return;
+        }
+        std::ptr::copy_nonoverlapping(src, dst, len);
     }
-    std::ptr::copy_nonoverlapping(src, dst, len);
 }
 
 #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
@@ -1486,11 +1490,10 @@ pub fn batch_validate_messages_simd(
 
         let msg_data = &data[offset..offset + len + 2];
 
-        if let Some(checksums) = expected_checksums {
-            if i < checksums.len() {
-                results.push(compute_checksum_simd(msg_data) == checksums[i]);
-                continue;
-            }
+        if expected_checksums.is_some_and(|checksums| i < checksums.len()) {
+            let checksums = expected_checksums.as_ref().unwrap();
+            results.push(compute_checksum_simd(msg_data) == checksums[i]);
+            continue;
         }
 
         let actual_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
@@ -1713,7 +1716,10 @@ impl ParseDiagnosticsExt {
     pub fn summary(&self) -> String {
         format!(
             "SIMD: {} ({:.1}% util), Cache: {} lines ({:.1}% prefetch), Validation: {}/{} ok ({:.2}% errors), {:.2} GB/s",
-            self.simd_diagnostics.level_used.map(|l| l.to_string()).unwrap_or_else(|| "N/A".to_string()),
+            self.simd_diagnostics
+                .level_used
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| "N/A".to_string()),
             self.simd_diagnostics.simd_utilization() * 100.0,
             self.cache_stats.total_cache_lines(),
             self.cache_stats.prefetch_hit_ratio() * 100.0,

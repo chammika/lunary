@@ -1,9 +1,9 @@
 mod fixtures;
 
 use lunary::simd::{
-    compute_checksum_simd, count_messages_fast, find_message_boundary, memcpy_simd,
-    read_timestamp_simd, read_u16_be_simd, read_u32_be_simd, read_u64_be_simd,
-    scan_boundaries_with_diagnostics, validate_boundaries_simd, SimdInfo, SimdLevel,
+    SimdInfo, SimdLevel, compute_checksum_simd, count_messages_fast, find_message_boundary,
+    memcpy_simd, read_timestamp_simd, read_u16_be_simd, read_u32_be_simd, read_u64_be_simd,
+    scan_boundaries_with_diagnostics, validate_boundaries_simd,
 };
 
 #[test]

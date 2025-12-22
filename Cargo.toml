@@ -2,7 +2,7 @@
 name = "lunary"
 version = "0.2.1"
 authors = ["Lunyn <contact@lunyn.com>"]
-edition = "2021"
+edition = "2024"
 license = "AGPL-3.0-or-later"
 description = "High-performance ITCH (NASDAQ TotalView-ITCH) parser with zero-copy, SIMD, and lock-free concurrency."
 readme = "README.md"

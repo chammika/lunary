@@ -191,8 +191,8 @@ impl<'a> ZeroCopyMessage<'a> {
     ///
     /// Caller must ensure `offset + 2 <= self.payload.len()`.
     pub unsafe fn read_u16_unchecked(&self, offset: usize) -> u16 {
-        let ptr = self.payload.as_ptr().add(offset);
-        u16::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 2]))
+        let ptr = unsafe { self.payload.as_ptr().add(offset) };
+        u16::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 2]) })
     }
 
     #[inline(always)]
@@ -200,8 +200,8 @@ impl<'a> ZeroCopyMessage<'a> {
     ///
     /// Caller must ensure `offset + 4 <= self.payload.len()`.
     pub unsafe fn read_u32_unchecked(&self, offset: usize) -> u32 {
-        let ptr = self.payload.as_ptr().add(offset);
-        u32::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 4]))
+        let ptr = unsafe { self.payload.as_ptr().add(offset) };
+        u32::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 4]) })
     }
 
     #[inline(always)]
@@ -209,8 +209,8 @@ impl<'a> ZeroCopyMessage<'a> {
     ///
     /// Caller must ensure `offset + 8 <= self.payload.len()`.
     pub unsafe fn read_u64_unchecked(&self, offset: usize) -> u64 {
-        let ptr = self.payload.as_ptr().add(offset);
-        u64::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 8]))
+        let ptr = unsafe { self.payload.as_ptr().add(offset) };
+        u64::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 8]) })
     }
 
     #[inline(always)]

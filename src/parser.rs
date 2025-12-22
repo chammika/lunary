@@ -237,7 +237,7 @@ impl Parser {
             None => {
                 return Err(ParseError::InvalidHeader {
                     reason: "message length must be at least 1 byte for message type",
-                })
+                });
             }
         };
         let message_end = message_start + payload_len;

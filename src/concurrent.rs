@@ -1,8 +1,8 @@
-use crossbeam_channel::{bounded, Receiver, Sender};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::Arc;
 #[cfg(feature = "pinning")]
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 

@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::{validate_message_stream_simd, BatchProcessor, ZeroCopyParser};
+use crate::{BatchProcessor, ZeroCopyParser, validate_message_stream_simd};
 
 pub fn run_fuzzing_test(data: &[u8]) -> Result<()> {
     println!("=== Fuzzing and Error Injection Test ===");
