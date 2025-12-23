@@ -1,4 +1,7 @@
+use crate::error::ParseError;
+use crate::zerocopy_types::MessageHeaderRaw;
 use std::marker::PhantomData;
+use zerocopy::Ref;
 
 pub trait ParseMessage<'a>: Sized {
     fn parse(data: &'a [u8], msg_type: u8) -> Option<Self>;
@@ -32,9 +35,10 @@ impl<'a> Stock<'a> {
     }
 
     #[inline(always)]
-    pub fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> Result<&str, ParseError> {
         let end = self.data.iter().position(|&b| b == b' ').unwrap_or(8);
-        unsafe { std::str::from_utf8_unchecked(&self.data[..end]) }
+        std::str::from_utf8(&self.data[..end])
+            .map_err(|_| ParseError::InvalidUtf8 { field: "stock" })
     }
 
     #[inline(always)]
@@ -69,9 +73,10 @@ impl<'a> Mpid<'a> {
     }
 
     #[inline(always)]
-    pub fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> Result<&str, ParseError> {
         let end = self.data.iter().position(|&b| b == b' ').unwrap_or(4);
-        unsafe { std::str::from_utf8_unchecked(&self.data[..end]) }
+        std::str::from_utf8(&self.data[..end])
+            .map_err(|_| ParseError::InvalidUtf8 { field: "mpid" })
     }
 
     #[inline(always)]
@@ -89,30 +94,8 @@ impl<'a> IntoOwned for Mpid<'a> {
     }
 }
 
-#[repr(C, align(64))]
-pub struct MessageHeader {
-    pub stock_locate: u16,
-    pub tracking_number: u16,
-    pub timestamp: u64,
-}
-
-impl MessageHeader {
-    #[inline(always)]
-    pub fn from_bytes(data: &[u8]) -> Self {
-        debug_assert!(data.len() >= 10);
-        Self {
-            stock_locate: u16::from_be_bytes([data[0], data[1]]),
-            tracking_number: u16::from_be_bytes([data[2], data[3]]),
-            timestamp: u64::from_be_bytes([
-                0, 0, data[4], data[5], data[6], data[7], data[8], data[9],
-            ]),
-        }
-    }
-}
-
-#[repr(C)]
 pub struct ZeroCopyMessage<'a> {
-    header: MessageHeader,
+    header: Ref<&'a [u8], MessageHeaderRaw>,
     payload: &'a [u8],
     msg_type: u8,
     _marker: PhantomData<&'a [u8]>,
@@ -120,7 +103,7 @@ pub struct ZeroCopyMessage<'a> {
 
 impl<'a> ZeroCopyMessage<'a> {
     #[inline(always)]
-    pub fn new(msg_type: u8, header: MessageHeader, payload: &'a [u8]) -> Self {
+    pub fn new(msg_type: u8, header: Ref<&'a [u8], MessageHeaderRaw>, payload: &'a [u8]) -> Self {
         Self {
             header,
             payload,
@@ -136,17 +119,17 @@ impl<'a> ZeroCopyMessage<'a> {
 
     #[inline(always)]
     pub fn stock_locate(&self) -> u16 {
-        self.header.stock_locate
+        self.header.stock_locate.get()
     }
 
     #[inline(always)]
     pub fn tracking_number(&self) -> u16 {
-        self.header.tracking_number
+        self.header.tracking_number.get()
     }
 
     #[inline(always)]
     pub fn timestamp(&self) -> u64 {
-        self.header.timestamp
+        self.header.timestamp()
     }
 
     #[inline(always)]
@@ -208,8 +191,8 @@ impl<'a> ZeroCopyMessage<'a> {
     ///
     /// Caller must ensure `offset + 2 <= self.payload.len()`.
     pub unsafe fn read_u16_unchecked(&self, offset: usize) -> u16 {
-        let ptr = self.payload.as_ptr().add(offset);
-        u16::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 2]))
+        let ptr = unsafe { self.payload.as_ptr().add(offset) };
+        u16::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 2]) })
     }
 
     #[inline(always)]
@@ -217,8 +200,8 @@ impl<'a> ZeroCopyMessage<'a> {
     ///
     /// Caller must ensure `offset + 4 <= self.payload.len()`.
     pub unsafe fn read_u32_unchecked(&self, offset: usize) -> u32 {
-        let ptr = self.payload.as_ptr().add(offset);
-        u32::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 4]))
+        let ptr = unsafe { self.payload.as_ptr().add(offset) };
+        u32::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 4]) })
     }
 
     #[inline(always)]
@@ -226,8 +209,8 @@ impl<'a> ZeroCopyMessage<'a> {
     ///
     /// Caller must ensure `offset + 8 <= self.payload.len()`.
     pub unsafe fn read_u64_unchecked(&self, offset: usize) -> u64 {
-        let ptr = self.payload.as_ptr().add(offset);
-        u64::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 8]))
+        let ptr = unsafe { self.payload.as_ptr().add(offset) };
+        u64::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 8]) })
     }
 
     #[inline(always)]
@@ -247,9 +230,12 @@ impl<'a> ParseMessage<'a> for ZeroCopyMessage<'a> {
         if data.len() < 10 {
             return None;
         }
-        let header = MessageHeader::from_bytes(data);
-        let payload = &data[10..];
-        Some(Self::new(msg_type, header, payload))
+        if let Ok((hdr_ref, rest)) = Ref::<&[u8], MessageHeaderRaw>::from_prefix(data) {
+            let payload = rest;
+            Some(Self::new(msg_type, hdr_ref, payload))
+        } else {
+            None
+        }
     }
 
     #[inline(always)]
@@ -259,7 +245,7 @@ impl<'a> ParseMessage<'a> for ZeroCopyMessage<'a> {
 
     #[inline(always)]
     fn timestamp(&self) -> u64 {
-        self.header.timestamp
+        self.header.timestamp()
     }
 }
 
@@ -308,12 +294,15 @@ impl<'a> ZeroCopyParser<'a> {
             return None;
         }
 
-        let header = MessageHeader::from_bytes(&self.data[header_start..header_end]);
-        let payload = &self.data[payload_start..payload_end];
+        if let Ok((hdr_ref, _)) =
+            Ref::<&[u8], MessageHeaderRaw>::from_prefix(&self.data[header_start..header_end])
+        {
+            let payload = &self.data[payload_start..payload_end];
+            self.position = pos + total_size;
+            return Some(ZeroCopyMessage::new(msg_type, hdr_ref, payload));
+        }
 
-        self.position = pos + total_size;
-
-        Some(ZeroCopyMessage::new(msg_type, header, payload))
+        None
     }
 
     #[inline]
@@ -457,13 +446,15 @@ impl<'a> ZeroCopyBatchProcessor<'a> {
                 break;
             }
 
-            let header = MessageHeader::from_bytes(&self.data[header_start..header_end]);
-            let payload = &self.data[payload_start..payload_end];
-
-            messages.push(ZeroCopyMessage::new(msg_type, header, payload));
-            self.position = pos + total_size;
-            self.bytes_processed += total_size as u64;
-            count += 1;
+            if let Ok((hdr_ref, _)) =
+                Ref::<&[u8], MessageHeaderRaw>::from_prefix(&self.data[header_start..header_end])
+            {
+                let payload = &self.data[payload_start..payload_end];
+                messages.push(ZeroCopyMessage::new(msg_type, hdr_ref, payload));
+                self.position = pos + total_size;
+                self.bytes_processed += total_size as u64;
+                count += 1;
+            }
         }
 
         self.messages_processed += messages.len() as u64;
@@ -557,13 +548,13 @@ mod tests {
     fn test_stock_as_str() {
         let data: [u8; 8] = *b"AAPL    ";
         let stock = Stock::new(&data);
-        assert_eq!(stock.as_str(), "AAPL");
+        assert_eq!(stock.as_str().unwrap(), "AAPL");
     }
 
     #[test]
     fn test_mpid_as_str() {
         let data: [u8; 4] = *b"NSDQ";
         let mpid = Mpid::new(&data);
-        assert_eq!(mpid.as_str(), "NSDQ");
+        assert_eq!(mpid.as_str().unwrap(), "NSDQ");
     }
 }

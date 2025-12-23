@@ -211,15 +211,21 @@ pub fn is_avx512_available() -> bool {
     }
 }
 
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "sse2")]
+fn copy_8_sse2(dst: &mut [u8; 8], src: &[u8]) {
+    unsafe {
+        let v = _mm_loadl_epi64(src.as_ptr() as *const __m128i);
+        _mm_storel_epi64(dst.as_mut_ptr() as *mut __m128i, v);
+    }
+}
+
 #[inline(always)]
 pub fn copy_8(dst: &mut [u8; 8], src: &[u8]) {
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
         if is_simd_available() && src.len() >= 8 {
-            unsafe {
-                let v = _mm_loadl_epi64(src.as_ptr() as *const __m128i);
-                _mm_storel_epi64(dst.as_mut_ptr() as *mut __m128i, v);
-            }
+            unsafe { copy_8_sse2(dst, src) };
             return;
         }
     }
@@ -241,31 +247,37 @@ pub fn copy_4(dst: &mut [u8; 4], src: &[u8]) {
     dst.copy_from_slice(&src[..4]);
 }
 
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "sse2")]
+fn find_message_boundary_sse2(data: &[u8], pattern: u8) -> Option<usize> {
+    unsafe {
+        let needle = _mm_set1_epi8(pattern as i8);
+        let mut offset = 0;
+
+        while offset + 16 <= data.len() {
+            let chunk = _mm_loadu_si128(data[offset..].as_ptr() as *const __m128i);
+            let cmp = _mm_cmpeq_epi8(chunk, needle);
+            let mask = _mm_movemask_epi8(cmp) as u32;
+
+            if mask != 0 {
+                return Some(offset + mask.trailing_zeros() as usize);
+            }
+            offset += 16;
+        }
+
+        data[offset..]
+            .iter()
+            .position(|&b| b == pattern)
+            .map(|i| i + offset)
+    }
+}
+
 #[inline(always)]
 pub fn find_message_boundary(data: &[u8], pattern: u8) -> Option<usize> {
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
         if is_simd_available() && data.len() >= 16 {
-            unsafe {
-                let needle = _mm_set1_epi8(pattern as i8);
-                let mut offset = 0;
-
-                while offset + 16 <= data.len() {
-                    let chunk = _mm_loadu_si128(data[offset..].as_ptr() as *const __m128i);
-                    let cmp = _mm_cmpeq_epi8(chunk, needle);
-                    let mask = _mm_movemask_epi8(cmp) as u32;
-
-                    if mask != 0 {
-                        return Some(offset + mask.trailing_zeros() as usize);
-                    }
-                    offset += 16;
-                }
-
-                return data[offset..]
-                    .iter()
-                    .position(|&b| b == pattern)
-                    .map(|i| i + offset);
-            }
+            return unsafe { find_message_boundary_sse2(data, pattern) };
         }
     }
 
@@ -291,14 +303,20 @@ pub fn validate_message_types(data: &[u8], valid_types: &[u8; 256]) -> bool {
     data.iter().all(|&b| valid_types[b as usize] != 0)
 }
 
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "sse2")]
+fn prefetch_data_sse2(ptr: *const u8) {
+    unsafe { _mm_prefetch(ptr as *const i8, _MM_HINT_T0) };
+}
+
 #[inline(always)]
-pub fn prefetch_data(ptr: *const u8) {
+/// # Safety
+/// The caller must ensure that `ptr` is a valid pointer for prefetching operations.
+pub unsafe fn prefetch_data(ptr: *const u8) {
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
         if is_simd_available() {
-            unsafe {
-                _mm_prefetch(ptr as *const i8, _MM_HINT_T0);
-            }
+            unsafe { prefetch_data_sse2(ptr) };
         }
     }
     let _ = ptr;
@@ -388,23 +406,38 @@ pub fn prefetch_next_message(data: &[u8], offset: usize) {
     let _ = (data, offset);
 }
 
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "sse2")]
+fn prefetch_range_sse2(data: &[u8]) {
+    unsafe {
+        let ptr = data.as_ptr();
+        let len = data.len();
+        let mut offset = 0;
+        while offset < len {
+            _mm_prefetch(ptr.add(offset) as *const i8, _MM_HINT_T0);
+            offset += 64;
+        }
+    }
+}
+
 #[inline(always)]
 pub fn prefetch_range(data: &[u8]) {
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
         if is_simd_available() {
-            unsafe {
-                let ptr = data.as_ptr();
-                let len = data.len();
-                let mut offset = 0;
-                while offset < len {
-                    _mm_prefetch(ptr.add(offset) as *const i8, _MM_HINT_T0);
-                    offset += 64;
-                }
-            }
+            unsafe { prefetch_range_sse2(data) };
         }
     }
     let _ = data;
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "sse2")]
+fn prefetch_for_write_sse2(dst: &mut [u8], offset: usize) {
+    unsafe {
+        let ptr = dst.as_mut_ptr().add(offset);
+        _mm_prefetch(ptr as *const i8, _MM_HINT_ET0);
+    }
 }
 
 #[inline(always)]
@@ -412,13 +445,26 @@ pub fn prefetch_for_write(dst: &mut [u8], offset: usize) {
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
         if is_simd_available() && offset < dst.len() {
-            unsafe {
-                let ptr = dst.as_mut_ptr().add(offset);
-                _mm_prefetch(ptr as *const i8, _MM_HINT_ET0);
-            }
+            unsafe { prefetch_for_write_sse2(dst, offset) };
         }
     }
     let _ = (dst, offset);
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "sse2")]
+fn memcpy_simd_sse2(dst: &mut [u8], src: &[u8], len: usize) {
+    unsafe {
+        let mut i = 0;
+        while i + 16 <= len {
+            let v = _mm_loadu_si128(src[i..].as_ptr() as *const __m128i);
+            _mm_storeu_si128(dst[i..].as_mut_ptr() as *mut __m128i, v);
+            i += 16;
+        }
+        if i < len {
+            dst[i..len].copy_from_slice(&src[i..len]);
+        }
+    }
 }
 
 #[inline(always)]
@@ -427,17 +473,7 @@ pub fn memcpy_simd(dst: &mut [u8], src: &[u8]) {
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
         if is_simd_available() && len >= 16 {
-            unsafe {
-                let mut i = 0;
-                while i + 16 <= len {
-                    let v = _mm_loadu_si128(src[i..].as_ptr() as *const __m128i);
-                    _mm_storeu_si128(dst[i..].as_mut_ptr() as *mut __m128i, v);
-                    i += 16;
-                }
-                if i < len {
-                    dst[i..len].copy_from_slice(&src[i..len]);
-                }
-            }
+            unsafe { memcpy_simd_sse2(dst, src, len) };
             return;
         }
     }
@@ -457,28 +493,34 @@ fn is_avx2_available() -> bool {
     false
 }
 
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+fn memcpy_avx2_inner(dst: &mut [u8], src: &[u8], len: usize) {
+    unsafe {
+        let mut i = 0;
+        while i + 32 <= len {
+            let v = _mm256_loadu_si256(src[i..].as_ptr() as *const __m256i);
+            _mm256_storeu_si256(dst[i..].as_mut_ptr() as *mut __m256i, v);
+            i += 32;
+        }
+        while i + 16 <= len {
+            let v = _mm_loadu_si128(src[i..].as_ptr() as *const __m128i);
+            _mm_storeu_si128(dst[i..].as_mut_ptr() as *mut __m128i, v);
+            i += 16;
+        }
+        if i < len {
+            dst[i..len].copy_from_slice(&src[i..len]);
+        }
+    }
+}
+
 #[inline(always)]
 pub fn memcpy_avx2(dst: &mut [u8], src: &[u8]) {
     let len = dst.len().min(src.len());
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
         if is_avx2_available() && len >= 32 {
-            unsafe {
-                let mut i = 0;
-                while i + 32 <= len {
-                    let v = _mm256_loadu_si256(src[i..].as_ptr() as *const __m256i);
-                    _mm256_storeu_si256(dst[i..].as_mut_ptr() as *mut __m256i, v);
-                    i += 32;
-                }
-                while i + 16 <= len {
-                    let v = _mm_loadu_si128(src[i..].as_ptr() as *const __m128i);
-                    _mm_storeu_si128(dst[i..].as_mut_ptr() as *mut __m128i, v);
-                    i += 16;
-                }
-                if i < len {
-                    dst[i..len].copy_from_slice(&src[i..len]);
-                }
-            }
+            unsafe { memcpy_avx2_inner(dst, src, len) };
             return;
         }
     }
@@ -486,28 +528,34 @@ pub fn memcpy_avx2(dst: &mut [u8], src: &[u8]) {
     memcpy_simd(dst, src);
 }
 
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+fn find_bytes_avx2_inner(data: &[u8], pattern: u8) -> Option<usize> {
+    unsafe {
+        let needle = _mm256_set1_epi8(pattern as i8);
+        let mut offset = 0;
+
+        while offset + 32 <= data.len() {
+            let chunk = _mm256_loadu_si256(data[offset..].as_ptr() as *const __m256i);
+            let cmp = _mm256_cmpeq_epi8(chunk, needle);
+            let mask = _mm256_movemask_epi8(cmp) as u32;
+
+            if mask != 0 {
+                return Some(offset + mask.trailing_zeros() as usize);
+            }
+            offset += 32;
+        }
+
+        find_message_boundary(&data[offset..], pattern).map(|i| i + offset)
+    }
+}
+
 #[inline(always)]
 pub fn find_bytes_avx2(data: &[u8], pattern: u8) -> Option<usize> {
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
         if is_avx2_available() && data.len() >= 32 {
-            unsafe {
-                let needle = _mm256_set1_epi8(pattern as i8);
-                let mut offset = 0;
-
-                while offset + 32 <= data.len() {
-                    let chunk = _mm256_loadu_si256(data[offset..].as_ptr() as *const __m256i);
-                    let cmp = _mm256_cmpeq_epi8(chunk, needle);
-                    let mask = _mm256_movemask_epi8(cmp) as u32;
-
-                    if mask != 0 {
-                        return Some(offset + mask.trailing_zeros() as usize);
-                    }
-                    offset += 32;
-                }
-
-                return find_message_boundary(&data[offset..], pattern).map(|i| i + offset);
-            }
+            return unsafe { find_bytes_avx2_inner(data, pattern) };
         }
     }
 
@@ -515,26 +563,32 @@ pub fn find_bytes_avx2(data: &[u8], pattern: u8) -> Option<usize> {
 }
 
 #[cfg(all(feature = "avx512", target_arch = "x86_64"))]
+#[target_feature(enable = "avx512f")]
+fn memcpy_avx512_inner(dst: &mut [u8], src: &[u8], len: usize) {
+    unsafe {
+        let mut i = 0;
+        while i + 64 <= len {
+            let v = _mm512_loadu_si512(src[i..].as_ptr() as *const __m512i);
+            _mm512_storeu_si512(dst[i..].as_mut_ptr() as *mut __m512i, v);
+            i += 64;
+        }
+        while i + 32 <= len {
+            let v = _mm256_loadu_si256(src[i..].as_ptr() as *const __m256i);
+            _mm256_storeu_si256(dst[i..].as_mut_ptr() as *mut __m256i, v);
+            i += 32;
+        }
+        if i < len {
+            dst[i..len].copy_from_slice(&src[i..len]);
+        }
+    }
+}
+
+#[cfg(all(feature = "avx512", target_arch = "x86_64"))]
 #[inline(always)]
 pub fn memcpy_avx512(dst: &mut [u8], src: &[u8]) {
     let len = dst.len().min(src.len());
     if is_avx512_available() && len >= 64 {
-        unsafe {
-            let mut i = 0;
-            while i + 64 <= len {
-                let v = _mm512_loadu_si512(src[i..].as_ptr() as *const __m512i);
-                _mm512_storeu_si512(dst[i..].as_mut_ptr() as *mut __m512i, v);
-                i += 64;
-            }
-            while i + 32 <= len {
-                let v = _mm256_loadu_si256(src[i..].as_ptr() as *const __m256i);
-                _mm256_storeu_si256(dst[i..].as_mut_ptr() as *mut __m256i, v);
-                i += 32;
-            }
-            if i < len {
-                dst[i..len].copy_from_slice(&src[i..len]);
-            }
-        }
+        unsafe { memcpy_avx512_inner(dst, src, len) };
         return;
     }
     memcpy_avx2(dst, src);
@@ -547,25 +601,31 @@ pub fn memcpy_avx512(dst: &mut [u8], src: &[u8]) {
 }
 
 #[cfg(all(feature = "avx512", target_arch = "x86_64"))]
+#[target_feature(enable = "avx512bw")]
+fn find_bytes_avx512_inner(data: &[u8], pattern: u8) -> Option<usize> {
+    unsafe {
+        let needle = _mm512_set1_epi8(pattern as i8);
+        let mut offset = 0;
+
+        while offset + 64 <= data.len() {
+            let chunk = _mm512_loadu_si512(data[offset..].as_ptr() as *const __m512i);
+            let mask = _mm512_cmpeq_epi8_mask(chunk, needle);
+
+            if mask != 0 {
+                return Some(offset + mask.trailing_zeros() as usize);
+            }
+            offset += 64;
+        }
+
+        find_bytes_avx2(&data[offset..], pattern).map(|i| i + offset)
+    }
+}
+
+#[cfg(all(feature = "avx512", target_arch = "x86_64"))]
 #[inline(always)]
 pub fn find_bytes_avx512(data: &[u8], pattern: u8) -> Option<usize> {
     if is_avx512_available() && data.len() >= 64 {
-        unsafe {
-            let needle = _mm512_set1_epi8(pattern as i8);
-            let mut offset = 0;
-
-            while offset + 64 <= data.len() {
-                let chunk = _mm512_loadu_si512(data[offset..].as_ptr() as *const __m512i);
-                let mask = _mm512_cmpeq_epi8_mask(chunk, needle);
-
-                if mask != 0 {
-                    return Some(offset + mask.trailing_zeros() as usize);
-                }
-                offset += 64;
-            }
-
-            return find_bytes_avx2(&data[offset..], pattern).map(|i| i + offset);
-        }
+        return unsafe { find_bytes_avx512_inner(data, pattern) };
     }
 
     find_bytes_avx2(data, pattern)
@@ -623,8 +683,8 @@ pub fn prefetch_avx512(data: &[u8], offset: usize) {
 ///
 /// Caller must ensure `pos + 8 <= data.len()`.
 pub unsafe fn read_u64_unchecked(data: &[u8], pos: usize) -> u64 {
-    let ptr = data.as_ptr().add(pos);
-    u64::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 8]))
+    let ptr = unsafe { data.as_ptr().add(pos) };
+    u64::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 8]) })
 }
 
 #[inline(always)]
@@ -632,8 +692,8 @@ pub unsafe fn read_u64_unchecked(data: &[u8], pos: usize) -> u64 {
 ///
 /// Caller must ensure `pos + 4 <= data.len()`.
 pub unsafe fn read_u32_unchecked(data: &[u8], pos: usize) -> u32 {
-    let ptr = data.as_ptr().add(pos);
-    u32::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 4]))
+    let ptr = unsafe { data.as_ptr().add(pos) };
+    u32::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 4]) })
 }
 
 #[inline(always)]
@@ -641,8 +701,8 @@ pub unsafe fn read_u32_unchecked(data: &[u8], pos: usize) -> u32 {
 ///
 /// Caller must ensure `pos + 2 <= data.len()`.
 pub unsafe fn read_u16_unchecked(data: &[u8], pos: usize) -> u16 {
-    let ptr = data.as_ptr().add(pos);
-    u16::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 2]))
+    let ptr = unsafe { data.as_ptr().add(pos) };
+    u16::from_be_bytes(unsafe { std::ptr::read_unaligned(ptr as *const [u8; 2]) })
 }
 
 #[inline(always)]
@@ -650,13 +710,13 @@ pub unsafe fn read_u16_unchecked(data: &[u8], pos: usize) -> u16 {
 ///
 /// Caller must ensure `pos + 6 <= data.len()`.
 pub unsafe fn read_timestamp_unchecked(data: &[u8], pos: usize) -> u64 {
-    let ptr = data.as_ptr().add(pos);
-    let b0 = *ptr as u64;
-    let b1 = *ptr.add(1) as u64;
-    let b2 = *ptr.add(2) as u64;
-    let b3 = *ptr.add(3) as u64;
-    let b4 = *ptr.add(4) as u64;
-    let b5 = *ptr.add(5) as u64;
+    let ptr = unsafe { data.as_ptr().add(pos) };
+    let b0 = unsafe { *ptr } as u64;
+    let b1 = unsafe { *ptr.add(1) } as u64;
+    let b2 = unsafe { *ptr.add(2) } as u64;
+    let b3 = unsafe { *ptr.add(3) } as u64;
+    let b4 = unsafe { *ptr.add(4) } as u64;
+    let b5 = unsafe { *ptr.add(5) } as u64;
     (b0 << 40) | (b1 << 32) | (b2 << 24) | (b3 << 16) | (b4 << 8) | b5
 }
 
@@ -711,15 +771,9 @@ pub fn scan_message_lengths_simd(data: &[u8], max_messages: usize) -> Vec<(usize
 }
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-#[inline(always)]
-/// # Safety
-///
-/// Caller must ensure:
-/// - `src` is valid for reads of `len` bytes
-/// - `dst` is valid for writes of `len` bytes
-/// - the regions do not overlap
-pub unsafe fn memcpy_nontemporal(dst: *mut u8, src: *const u8, len: usize) {
-    if is_simd_available() && len >= 64 {
+#[target_feature(enable = "sse2")]
+unsafe fn memcpy_nontemporal_sse2(dst: *mut u8, src: *const u8, len: usize) {
+    unsafe {
         let mut i = 0;
         while i + 16 <= len {
             let v = _mm_loadu_si128(src.add(i) as *const __m128i);
@@ -730,9 +784,25 @@ pub unsafe fn memcpy_nontemporal(dst: *mut u8, src: *const u8, len: usize) {
         if i < len {
             std::ptr::copy_nonoverlapping(src.add(i), dst.add(i), len - i);
         }
-        return;
     }
-    std::ptr::copy_nonoverlapping(src, dst, len);
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline(always)]
+/// # Safety
+///
+/// Caller must ensure:
+/// - `src` is valid for reads of `len` bytes
+/// - `dst` is valid for writes of `len` bytes
+/// - the regions do not overlap
+pub unsafe fn memcpy_nontemporal(dst: *mut u8, src: *const u8, len: usize) {
+    unsafe {
+        if is_simd_available() && len >= 64 {
+            memcpy_nontemporal_sse2(dst, src, len);
+            return;
+        }
+        std::ptr::copy_nonoverlapping(src, dst, len);
+    }
 }
 
 #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
@@ -1420,11 +1490,10 @@ pub fn batch_validate_messages_simd(
 
         let msg_data = &data[offset..offset + len + 2];
 
-        if let Some(checksums) = expected_checksums {
-            if i < checksums.len() {
-                results.push(compute_checksum_simd(msg_data) == checksums[i]);
-                continue;
-            }
+        if expected_checksums.is_some_and(|checksums| i < checksums.len()) {
+            let checksums = expected_checksums.as_ref().unwrap();
+            results.push(compute_checksum_simd(msg_data) == checksums[i]);
+            continue;
         }
 
         let actual_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
@@ -1647,7 +1716,10 @@ impl ParseDiagnosticsExt {
     pub fn summary(&self) -> String {
         format!(
             "SIMD: {} ({:.1}% util), Cache: {} lines ({:.1}% prefetch), Validation: {}/{} ok ({:.2}% errors), {:.2} GB/s",
-            self.simd_diagnostics.level_used.map(|l| l.to_string()).unwrap_or_else(|| "N/A".to_string()),
+            self.simd_diagnostics
+                .level_used
+                .map(|l| l.to_string())
+                .unwrap_or_else(|| "N/A".to_string()),
             self.simd_diagnostics.simd_utilization() * 100.0,
             self.cache_stats.total_cache_lines(),
             self.cache_stats.prefetch_hit_ratio() * 100.0,
@@ -1656,5 +1728,638 @@ impl ParseDiagnosticsExt {
             self.validation_result.error_rate() * 100.0,
             self.throughput_gbps
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(test)]
+    mod fixtures {
+        pub fn standard_fixture() -> Vec<u8> {
+            let mut messages = Vec::new();
+            for i in 0..1000u16 {
+                let msg_type = b'A' + (i % 26) as u8;
+                let payload: Vec<u8> = (0..(10 + (i % 20) as usize)).map(|j| j as u8).collect();
+                messages.push((msg_type, payload));
+            }
+            let mut buf = Vec::new();
+            for (msg_type, payload) in &messages {
+                let len = 1 + payload.len();
+                buf.extend_from_slice(&(len as u16).to_be_bytes());
+                buf.push(*msg_type);
+                buf.extend_from_slice(payload);
+            }
+            buf
+        }
+    }
+
+    #[test]
+    fn test_simd_detection() {
+        let info = simd_info();
+        let _ = info.best_available();
+    }
+
+    #[test]
+    fn test_read_u16_unchecked() {
+        let data = [0x12, 0x34, 0x56, 0x78];
+        unsafe {
+            assert_eq!(read_u16_unchecked(&data, 0), 0x1234);
+            assert_eq!(read_u16_unchecked(&data, 2), 0x5678);
+        }
+    }
+
+    #[test]
+    fn test_read_u32_unchecked() {
+        let data = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC];
+        unsafe {
+            assert_eq!(read_u32_unchecked(&data, 0), 0x12345678);
+            assert_eq!(read_u32_unchecked(&data, 2), 0x56789ABC);
+        }
+    }
+
+    #[test]
+    fn test_read_u64_unchecked() {
+        let data = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11, 0x22];
+        unsafe {
+            assert_eq!(read_u64_unchecked(&data, 0), 0x123456789ABCDEF0);
+            assert_eq!(read_u64_unchecked(&data, 2), 0x56789ABCDEF01122);
+        }
+    }
+
+    #[test]
+    fn test_read_timestamp_unchecked() {
+        let data = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE];
+        unsafe {
+            assert_eq!(read_timestamp_unchecked(&data, 0), 0x123456789ABC);
+        }
+    }
+
+    #[test]
+    fn test_memcpy_nontemporal_small() {
+        let src = [1, 2, 3, 4, 5];
+        let mut dst = [0; 5];
+        unsafe {
+            memcpy_nontemporal(dst.as_mut_ptr(), src.as_ptr(), 5);
+        }
+        assert_eq!(dst, src);
+    }
+
+    #[test]
+    fn test_memcpy_nontemporal_large() {
+        let src = vec![42; 128];
+        let mut dst = vec![0; 128];
+        unsafe {
+            memcpy_nontemporal(dst.as_mut_ptr(), src.as_ptr(), 128);
+        }
+        assert_eq!(dst, src);
+    }
+
+    #[test]
+    fn test_simd_level_fallback() {
+        let info = SimdInfo {
+            available: false,
+            sse2: false,
+            ssse3: false,
+            avx2: false,
+            avx512: false,
+        };
+        assert_eq!(info.register_width(), 8);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_copy_8() {
+        let src = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let mut dst_simd = [0u8; 8];
+        let mut dst_scalar = [0u8; 8];
+
+        copy_8(&mut dst_simd, &src);
+        dst_scalar.copy_from_slice(&src[..8]);
+
+        assert_eq!(dst_simd, dst_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_copy_4() {
+        let src = [1, 2, 3, 4, 5, 6, 7, 8];
+        let mut dst_simd = [0u8; 4];
+        let mut dst_scalar = [0u8; 4];
+
+        copy_4(&mut dst_simd, &src);
+        dst_scalar.copy_from_slice(&src[..4]);
+
+        assert_eq!(dst_simd, dst_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_read_u64_be() {
+        let data = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+        let expected = u64::from_be_bytes(data);
+
+        let result_simd = read_u64_be_simd(&data);
+        assert_eq!(result_simd, expected);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_read_u32_be() {
+        let data = [0x12, 0x34, 0x56, 0x78];
+        let expected = u32::from_be_bytes(data);
+
+        let result_simd = read_u32_be_simd(&data);
+        assert_eq!(result_simd, expected);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_read_u16_be() {
+        let data = [0x12, 0x34];
+        let expected = u16::from_be_bytes(data);
+
+        let result_simd = read_u16_be_simd(&data);
+        assert_eq!(result_simd, expected);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_read_timestamp() {
+        let data = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC];
+        let expected = u64::from_be_bytes([0, 0, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC]);
+
+        let result_simd = read_timestamp_simd(&data);
+        assert_eq!(result_simd, expected);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_find_message_boundary() {
+        let data = [0, 1, 2, 255, 4, 5, 6, 7, 8, 9];
+        let pattern = 255u8;
+
+        let result_simd = find_message_boundary(&data, pattern);
+        let result_scalar = data.iter().position(|&b| b == pattern);
+
+        assert_eq!(result_simd, result_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_memcpy() {
+        let src = vec![42; 64];
+        let mut dst_simd = vec![0; 64];
+        let mut dst_scalar = vec![0; 64];
+
+        memcpy_simd(&mut dst_simd, &src);
+        dst_scalar.copy_from_slice(&src);
+
+        assert_eq!(dst_simd, dst_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_memcpy_avx2() {
+        let src = vec![42; 64];
+        let mut dst_simd = vec![0; 64];
+        let mut dst_scalar = vec![0; 64];
+
+        memcpy_avx2(&mut dst_simd, &src);
+        dst_scalar.copy_from_slice(&src);
+
+        assert_eq!(dst_simd, dst_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_memcpy_avx512() {
+        let src = vec![42; 128];
+        let mut dst_simd = vec![0; 128];
+        let mut dst_scalar = vec![0; 128];
+
+        memcpy_avx512(&mut dst_simd, &src);
+        dst_scalar.copy_from_slice(&src);
+
+        assert_eq!(dst_simd, dst_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_find_bytes_avx2() {
+        let data = [0, 1, 2, 255, 4, 5, 6, 7, 8, 9, 255, 11];
+        let pattern = 255u8;
+
+        let result_simd = find_bytes_avx2(&data, pattern);
+        let result_scalar = find_message_boundary(&data, pattern);
+
+        assert_eq!(result_simd, result_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_find_bytes_avx512() {
+        let data = [0, 1, 2, 255, 4, 5, 6, 7, 8, 9, 255, 11];
+        let pattern = 255u8;
+
+        let result_simd = find_bytes_avx512(&data, pattern);
+        let result_scalar = find_message_boundary(&data, pattern);
+
+        assert_eq!(result_simd, result_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_compute_checksum() {
+        let data = [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+        ];
+
+        let result_simd = compute_checksum_simd(&data);
+        let result_scalar = compute_checksum_scalar(&data);
+
+        assert_eq!(result_simd, result_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_validate_checksum() {
+        let data = [1, 2, 3, 4, 5];
+        let checksum = compute_checksum_scalar(&data);
+
+        let result_simd = validate_checksum_simd(&data, checksum);
+        let result_scalar = compute_checksum_scalar(&data) == checksum;
+
+        assert_eq!(result_simd, result_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_count_messages() {
+        let data = fixtures::standard_fixture();
+
+        let result_simd = count_messages_fast(&data);
+        let mut result_scalar = 0;
+        let mut offset = 0;
+        while offset + 2 <= data.len() {
+            let msg_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+            let total = msg_len + 2;
+            if offset + total > data.len() {
+                break;
+            }
+            result_scalar += 1;
+            offset += total;
+        }
+
+        assert_eq!(result_simd, result_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_scan_boundaries() {
+        let data = fixtures::standard_fixture();
+
+        let result_simd = scan_boundaries_with_diagnostics(&data, usize::MAX);
+        let mut boundaries_scalar = Vec::new();
+        let mut offset = 0;
+        while offset + 2 <= data.len() {
+            let msg_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+            let total = msg_len + 2;
+            if offset + total > data.len() {
+                break;
+            }
+            boundaries_scalar.push((offset, msg_len));
+            offset += total;
+        }
+
+        assert_eq!(result_simd.boundaries, boundaries_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_validate_boundaries() {
+        let data = fixtures::standard_fixture();
+        let boundaries = vec![(0, 11), (13, 12), (27, 13)];
+
+        let result_simd = validate_boundaries_simd(&data, &boundaries);
+        let result_scalar = validate_boundaries_scalar(&data, &boundaries);
+
+        assert_eq!(result_simd, result_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_batch_read_u16() {
+        let data = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC];
+        let offsets = [0, 2, 4];
+        let mut out_simd = [0u16; 3];
+        let mut out_scalar = [0u16; 3];
+
+        let count_simd = batch_read_u16_simd(&data, &offsets, &mut out_simd);
+        let count_scalar = offsets.len().min(out_scalar.len());
+        for i in 0..count_scalar {
+            let offset = offsets[i];
+            if offset + 2 <= data.len() {
+                out_scalar[i] = u16::from_be_bytes([data[offset], data[offset + 1]]);
+            }
+        }
+
+        assert_eq!(count_simd, count_scalar);
+        assert_eq!(out_simd[..count_simd], out_scalar[..count_scalar]);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_batch_read_u32() {
+        let data = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+        let offsets = [0, 4];
+        let mut out_simd = [0u32; 2];
+        let mut out_scalar = [0u32; 2];
+
+        let count_simd = batch_read_u32_simd(&data, &offsets, &mut out_simd);
+        let count_scalar = offsets.len().min(out_scalar.len());
+        for i in 0..count_scalar {
+            let offset = offsets[i];
+            if offset + 4 <= data.len() {
+                out_scalar[i] = u32::from_be_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]);
+            }
+        }
+
+        assert_eq!(count_simd, count_scalar);
+        assert_eq!(out_simd[..count_simd], out_scalar[..count_scalar]);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_batch_read_u64() {
+        let data = [
+            0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11, 0x22, 0x33, 0x44,
+        ];
+        let offsets = [0, 4];
+        let mut out_simd = [0u64; 2];
+        let mut out_scalar = [0u64; 2];
+
+        let count_simd = batch_read_u64_simd(&data, &offsets, &mut out_simd);
+        let count_scalar = offsets.len().min(out_scalar.len());
+        for i in 0..count_scalar {
+            let offset = offsets[i];
+            if offset + 8 <= data.len() {
+                out_scalar[i] = u64::from_be_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                    data[offset + 4],
+                    data[offset + 5],
+                    data[offset + 6],
+                    data[offset + 7],
+                ]);
+            }
+        }
+
+        assert_eq!(count_simd, count_scalar);
+        assert_eq!(out_simd[..count_simd], out_scalar[..count_scalar]);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_validate_message_sequence() {
+        let data = fixtures::standard_fixture();
+
+        let (valid_simd, count_simd) = validate_message_sequence_simd(&data, usize::MAX);
+        let mut valid_scalar = true;
+        let mut count_scalar = 0;
+        let mut offset = 0;
+        let len = data.len();
+
+        while offset + 3 <= len && count_scalar < usize::MAX {
+            let msg_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+
+            if msg_len == 0 || msg_len > 64 * 1024 {
+                valid_scalar = false;
+                break;
+            }
+
+            let total = msg_len + 2;
+            if offset + total > len {
+                valid_scalar = false;
+                break;
+            }
+
+            let msg_type = data[offset + 2];
+            if !is_valid_message_type(msg_type) {
+                valid_scalar = false;
+                break;
+            }
+
+            offset += total;
+            count_scalar += 1;
+        }
+
+        assert_eq!(valid_simd, valid_scalar);
+        assert_eq!(count_simd, count_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_extract_timestamps() {
+        let data = fixtures::standard_fixture();
+
+        let result_simd = extract_timestamps_simd(&data, usize::MAX);
+        let mut result_scalar = Vec::new();
+        let mut offset = 0;
+        let len = data.len();
+
+        while offset + 13 <= len && result_scalar.len() < usize::MAX {
+            let msg_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+            let total = msg_len + 2;
+
+            if offset + total > len || msg_len < 11 {
+                break;
+            }
+
+            let ts = u64::from_be_bytes([
+                0,
+                0,
+                data[offset + 7],
+                data[offset + 8],
+                data[offset + 9],
+                data[offset + 10],
+                data[offset + 11],
+                data[offset + 12],
+            ]);
+            result_scalar.push(ts);
+            offset += total;
+        }
+
+        assert_eq!(result_simd, result_scalar);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_validate_message_stream() {
+        let data = fixtures::standard_fixture();
+
+        let result_simd = validate_message_stream_simd(&data, usize::MAX);
+        let mut result_scalar = ValidationResult::new();
+        let mut offset = 0;
+        let len = data.len();
+
+        while offset + 3 <= len {
+            let msg_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+            let total = msg_len + 2;
+
+            if msg_len == 0 || msg_len > 64 * 1024 {
+                result_scalar.invalid_count += 1;
+                result_scalar.error_offsets.push(offset);
+                result_scalar
+                    .error_types
+                    .push(ValidationError::InvalidLength);
+                break;
+            }
+
+            if offset + total > len {
+                result_scalar.invalid_count += 1;
+                result_scalar.error_offsets.push(offset);
+                result_scalar
+                    .error_types
+                    .push(ValidationError::TruncatedMessage);
+                break;
+            }
+
+            let msg_type = data[offset + 2];
+            if !VALID_MSG_TYPES.contains(&msg_type) {
+                result_scalar.invalid_count += 1;
+                result_scalar.error_offsets.push(offset);
+                result_scalar
+                    .error_types
+                    .push(ValidationError::InvalidMessageType);
+            } else {
+                result_scalar.valid_count += 1;
+            }
+
+            result_scalar.bytes_validated += total as u64;
+            offset += total;
+        }
+
+        assert_eq!(result_simd.valid_count, result_scalar.valid_count);
+        assert_eq!(result_simd.invalid_count, result_scalar.invalid_count);
+        assert_eq!(result_simd.error_offsets, result_scalar.error_offsets);
+        assert_eq!(result_simd.error_types, result_scalar.error_types);
+        assert_eq!(result_simd.bytes_validated, result_scalar.bytes_validated);
+    }
+
+    #[test]
+    fn test_simd_scalar_consistency_batch_validate_messages() {
+        let data = fixtures::standard_fixture();
+        let boundaries = vec![(0, 11), (13, 12), (27, 13)];
+        let checksums = vec![1234, 5678, 9012];
+
+        let result_simd = batch_validate_messages_simd(&data, &boundaries, Some(&checksums));
+        let mut result_scalar = Vec::with_capacity(boundaries.len());
+
+        for (i, &(offset, len)) in boundaries.iter().enumerate() {
+            if offset + len + 2 > data.len() {
+                result_scalar.push(false);
+                continue;
+            }
+
+            let msg_data = &data[offset..offset + len + 2];
+            let checksum = compute_checksum_scalar(msg_data);
+            result_scalar.push(checksum == checksums[i]);
+        }
+
+        assert_eq!(result_simd, result_scalar);
+    }
+
+    #[test]
+    fn test_fallback_behavior_on_non_x86() {
+        let data = [1, 2, 3, 4, 5, 6, 7, 8];
+        let mut dst = [0u8; 8];
+
+        copy_8(&mut dst, &data);
+        assert_eq!(dst, [1, 2, 3, 4, 5, 6, 7, 8]);
+
+        let result = read_u64_be_simd(&data);
+        let expected = u64::from_be_bytes([1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_edge_cases_empty_data() {
+        let empty: [u8; 0] = [];
+        assert_eq!(find_message_boundary(&empty, 255), None);
+        assert_eq!(compute_checksum_simd(&empty), 0);
+        assert_eq!(count_messages_fast(&empty), 0);
+    }
+
+    #[test]
+    fn test_edge_cases_small_data() {
+        let small = [1, 2];
+        let _ = find_message_boundary(&small, 255);
+        assert_eq!(compute_checksum_simd(&small), 3);
+    }
+
+    #[test]
+    fn test_prefetch_safety() {
+        let mut data = vec![42; 100];
+        unsafe { prefetch_data(data.as_ptr()) };
+        prefetch_next_message(&data, 50);
+        prefetch_range(&data);
+        prefetch_for_write(data.as_mut_slice(), 50);
+    }
+
+    #[test]
+    fn test_simd_info_consistency() {
+        let info = simd_info();
+        let best = info.best_available();
+
+        match best {
+            SimdLevel::Scalar
+            | SimdLevel::Sse2
+            | SimdLevel::Ssse3
+            | SimdLevel::Avx2
+            | SimdLevel::Avx512 => (),
+        }
+
+        let width = info.register_width();
+        assert!(width >= 8 && width <= 64);
+    }
+
+    #[test]
+    fn test_diagnostics_merge() {
+        let mut diag1 = SimdDiagnostics::new();
+        diag1.record_simd(100, SimdLevel::Avx2);
+        diag1.record_scalar(50);
+
+        let mut diag2 = SimdDiagnostics::new();
+        diag2.record_simd(200, SimdLevel::Avx512);
+        diag2.record_prefetch();
+
+        diag1.merge(&diag2);
+
+        assert_eq!(diag1.bytes_processed, 350);
+        assert_eq!(diag1.simd_bytes, 300);
+        assert_eq!(diag1.scalar_bytes, 50);
+        assert_eq!(diag1.prefetch_count, 1);
+        assert_eq!(diag1.level_used, Some(SimdLevel::Avx512));
+    }
+
+    #[test]
+    fn test_cache_stats() {
+        let mut stats = CacheStats::new();
+        stats.record_read(128);
+        stats.record_write(64);
+        stats.record_prefetch();
+
+        assert_eq!(stats.cache_lines_read, 2);
+        assert_eq!(stats.cache_lines_written, 1);
+        assert_eq!(stats.prefetch_issued, 1);
+        assert_eq!(stats.total_cache_lines(), 3);
+    }
+
+    #[test]
+    fn test_validation_result_merge() {
+        let mut res1 = ValidationResult::new();
+        res1.valid_count = 10;
+        res1.invalid_count = 2;
+        res1.error_offsets = vec![100, 200];
+        res1.bytes_validated = 1000;
+
+        let mut res2 = ValidationResult::new();
+        res2.valid_count = 15;
+        res2.invalid_count = 1;
+        res2.error_offsets = vec![300];
+        res2.bytes_validated = 1500;
+
+        res1.merge(&res2);
+
+        assert_eq!(res1.valid_count, 25);
+        assert_eq!(res1.invalid_count, 3);
+        assert_eq!(res1.error_offsets, vec![100, 200, 300]);
+        assert_eq!(res1.bytes_validated, 2500);
     }
 }

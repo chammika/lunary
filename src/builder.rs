@@ -198,10 +198,15 @@ pub enum AnyParser<'a> {
     WorkStealing(Box<WorkStealingParser>),
     Spsc(Box<SpscParser>),
     ZeroCopy(ZeroCopyParser<'a>),
+    Mmap(Box<MmapParser>),
 }
 
 impl ParserBuilder {
-    pub fn build_any<'a>(&self, data: Option<&'a [u8]>) -> crate::Result<AnyParser<'a>> {
+    pub fn build_any<'a>(
+        &self,
+        data: Option<&'a [u8]>,
+        mmap_path: Option<&std::path::Path>,
+    ) -> crate::Result<AnyParser<'a>> {
         match self.config.mode {
             ParserMode::Simple => Ok(AnyParser::Simple(Box::new(self.build_simple()))),
             ParserMode::Batch => Ok(AnyParser::Batch(Box::new(self.build_batch()))),
@@ -219,7 +224,14 @@ impl ParserBuilder {
                 })?;
                 Ok(AnyParser::ZeroCopy(self.build_zerocopy(d)))
             }
-            ParserMode::Mmap => Ok(AnyParser::Simple(Box::new(self.build_simple()))),
+            ParserMode::Mmap => {
+                let path = mmap_path.ok_or_else(|| {
+                    crate::ParseError::InvalidArgument(
+                        "Mmap mode requires a file path to be provided".to_string(),
+                    )
+                })?;
+                Ok(AnyParser::Mmap(Box::new(self.build_mmap(path)?)))
+            }
         }
     }
 }

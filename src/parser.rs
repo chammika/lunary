@@ -12,6 +12,27 @@ use std::time::{Duration, Instant};
 
 const CACHE_LINE_SIZE: usize = 64;
 
+macro_rules! dispatch_fn {
+    ($name:ident, $variant:ident, $parse_fn:ident) => {
+        #[inline(always)]
+        fn $name(&self, data: &[u8]) -> Result<Message> {
+            let mut pos = 0;
+            Ok(Message::$variant(self.$parse_fn(data, &mut pos)?))
+        }
+    };
+}
+
+macro_rules! parse_common_header {
+    ($self:expr, $data:expr, $pos:expr) => {
+        (|| -> Result<(u16, u16, u64)> {
+            let stock_locate = $self.read_u16($data, $pos)?;
+            let tracking_number = $self.read_u16($data, $pos)?;
+            let timestamp = $self.read_timestamp($data, $pos)?;
+            Ok((stock_locate, tracking_number, timestamp))
+        })()
+    };
+}
+
 #[repr(C, align(64))]
 pub struct Parser {
     buffer: Vec<u8>,
@@ -216,7 +237,7 @@ impl Parser {
             None => {
                 return Err(ParseError::InvalidHeader {
                     reason: "message length must be at least 1 byte for message type",
-                })
+                });
             }
         };
         let message_end = message_start + payload_len;
@@ -260,165 +281,63 @@ impl Parser {
         Ok(out)
     }
 
-    #[inline(always)]
-    fn dispatch_system_event(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::SystemEvent(
-            self.parse_system_event(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_stock_directory(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::StockDirectory(
-            self.parse_stock_directory(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_stock_trading_action(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::StockTradingAction(
-            self.parse_stock_trading_action(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_reg_sho(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::RegShoRestriction(
-            self.parse_reg_sho_restriction(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_mpp(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::MarketParticipantPosition(
-            self.parse_market_participant_position(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_mwcb_decline(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::MwcbDeclineLevel(
-            self.parse_mwcb_decline_level(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_mwcb_status(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::MwcbStatus(self.parse_mwcb_status(data, &mut pos)?))
-    }
-
-    #[inline(always)]
-    fn dispatch_ipo(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::IpoQuotingPeriod(
-            self.parse_ipo_quoting_period(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_add_order(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::AddOrder(self.parse_add_order(data, &mut pos)?))
-    }
-
-    #[inline(always)]
-    fn dispatch_add_order_mpid(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::AddOrderWithMpid(
-            self.parse_add_order_with_mpid(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_order_exec(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::OrderExecuted(
-            self.parse_order_executed(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_order_exec_price(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::OrderExecutedWithPrice(
-            self.parse_order_executed_with_price(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_order_cancel(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::OrderCancel(
-            self.parse_order_cancel(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_order_delete(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::OrderDelete(
-            self.parse_order_delete(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_order_replace(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::OrderReplace(
-            self.parse_order_replace(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_trade(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::Trade(self.parse_trade(data, &mut pos)?))
-    }
-
-    #[inline(always)]
-    fn dispatch_cross_trade(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::CrossTrade(self.parse_cross_trade(data, &mut pos)?))
-    }
-
-    #[inline(always)]
-    fn dispatch_broken_trade(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::BrokenTrade(
-            self.parse_broken_trade(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_noii(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::NetOrderImbalance(
-            self.parse_net_order_imbalance(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_rpi(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::RetailPriceImprovement(
-            self.parse_retail_price_improvement(data, &mut pos)?,
-        ))
-    }
-
-    #[inline(always)]
-    fn dispatch_luld_auction_collar(&self, data: &[u8]) -> Result<Message> {
-        let mut pos = 0;
-        Ok(Message::LuldAuctionCollar(
-            self.parse_luld_auction_collar(data, &mut pos)?,
-        ))
-    }
+    dispatch_fn!(dispatch_system_event, SystemEvent, parse_system_event);
+    dispatch_fn!(
+        dispatch_stock_directory,
+        StockDirectory,
+        parse_stock_directory
+    );
+    dispatch_fn!(
+        dispatch_stock_trading_action,
+        StockTradingAction,
+        parse_stock_trading_action
+    );
+    dispatch_fn!(
+        dispatch_reg_sho,
+        RegShoRestriction,
+        parse_reg_sho_restriction
+    );
+    dispatch_fn!(
+        dispatch_mpp,
+        MarketParticipantPosition,
+        parse_market_participant_position
+    );
+    dispatch_fn!(
+        dispatch_mwcb_decline,
+        MwcbDeclineLevel,
+        parse_mwcb_decline_level
+    );
+    dispatch_fn!(dispatch_mwcb_status, MwcbStatus, parse_mwcb_status);
+    dispatch_fn!(dispatch_ipo, IpoQuotingPeriod, parse_ipo_quoting_period);
+    dispatch_fn!(dispatch_add_order, AddOrder, parse_add_order);
+    dispatch_fn!(
+        dispatch_add_order_mpid,
+        AddOrderWithMpid,
+        parse_add_order_with_mpid
+    );
+    dispatch_fn!(dispatch_order_exec, OrderExecuted, parse_order_executed);
+    dispatch_fn!(
+        dispatch_order_exec_price,
+        OrderExecutedWithPrice,
+        parse_order_executed_with_price
+    );
+    dispatch_fn!(dispatch_order_cancel, OrderCancel, parse_order_cancel);
+    dispatch_fn!(dispatch_order_delete, OrderDelete, parse_order_delete);
+    dispatch_fn!(dispatch_order_replace, OrderReplace, parse_order_replace);
+    dispatch_fn!(dispatch_trade, Trade, parse_trade);
+    dispatch_fn!(dispatch_cross_trade, CrossTrade, parse_cross_trade);
+    dispatch_fn!(dispatch_broken_trade, BrokenTrade, parse_broken_trade);
+    dispatch_fn!(dispatch_noii, NetOrderImbalance, parse_net_order_imbalance);
+    dispatch_fn!(
+        dispatch_rpi,
+        RetailPriceImprovement,
+        parse_retail_price_improvement
+    );
+    dispatch_fn!(
+        dispatch_luld_auction_collar,
+        LuldAuctionCollar,
+        parse_luld_auction_collar
+    );
 
     #[inline(always)]
     fn read_u16(&self, data: &[u8], pos: &mut usize) -> Result<u16> {
@@ -582,20 +501,22 @@ impl Parser {
 
     #[inline]
     fn parse_system_event(&self, data: &[u8], pos: &mut usize) -> Result<SystemEventMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(SystemEventMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             event_code: self.read_u8(data, pos)? as char,
         })
     }
 
     #[inline]
     fn parse_stock_directory(&self, data: &[u8], pos: &mut usize) -> Result<StockDirectoryMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let stock = self.read_stock(data, pos)?;
+        let end = stock.iter().position(|&b| b == b' ').unwrap_or(8);
+        std::str::from_utf8(&stock[..end])
+            .map_err(|_| ParseError::InvalidUtf8 { field: "stock" })?;
         let market_category = self.read_u8(data, pos)? as char;
         let financial_status_indicator = self.read_u8(data, pos)? as char;
 
@@ -626,10 +547,11 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<StockTradingActionMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let stock = self.read_stock(data, pos)?;
+        let end = stock.iter().position(|&b| b == b' ').unwrap_or(8);
+        std::str::from_utf8(&stock[..end])
+            .map_err(|_| ParseError::InvalidUtf8 { field: "stock" })?;
         let trading_state = self.read_u8(data, pos)? as char;
         let reserved = self.read_u8(data, pos)? as char;
         let reason = self.read_reason(data, pos)?;
@@ -651,10 +573,11 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<RegShoRestrictionMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let stock = self.read_stock(data, pos)?;
+        let end = stock.iter().position(|&b| b == b' ').unwrap_or(8);
+        std::str::from_utf8(&stock[..end])
+            .map_err(|_| ParseError::InvalidUtf8 { field: "stock" })?;
         let reg_sho_action = self.read_u8(data, pos)? as char;
 
         Ok(RegShoRestrictionMessage {
@@ -672,11 +595,15 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<MarketParticipantPositionMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let mpid = self.read_mpid(data, pos)?;
+        let end_mpid = mpid.iter().position(|&b| b == b' ').unwrap_or(4);
+        std::str::from_utf8(&mpid[..end_mpid])
+            .map_err(|_| ParseError::InvalidUtf8 { field: "mpid" })?;
         let stock = self.read_stock(data, pos)?;
+        let end_stock = stock.iter().position(|&b| b == b' ').unwrap_or(8);
+        std::str::from_utf8(&stock[..end_stock])
+            .map_err(|_| ParseError::InvalidUtf8 { field: "stock" })?;
         let primary_market_maker = self.read_u8(data, pos)? as char;
         let market_maker_mode = self.read_u8(data, pos)? as char;
         let market_participant_state = self.read_u8(data, pos)? as char;
@@ -699,10 +626,11 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<MwcbDeclineLevelMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(MwcbDeclineLevelMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             level1: self.read_u64(data, pos)?,
             level2: self.read_u64(data, pos)?,
             level3: self.read_u64(data, pos)?,
@@ -711,10 +639,11 @@ impl Parser {
 
     #[inline]
     fn parse_mwcb_status(&self, data: &[u8], pos: &mut usize) -> Result<MwcbStatusMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(MwcbStatusMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             breached_level: self.read_u8(data, pos)? as char,
         })
     }
@@ -725,10 +654,11 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<IpoQuotingPeriodMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let stock = self.read_stock(data, pos)?;
+        let end = stock.iter().position(|&b| b == b' ').unwrap_or(8);
+        std::str::from_utf8(&stock[..end])
+            .map_err(|_| ParseError::InvalidUtf8 { field: "stock" })?;
 
         Ok(IpoQuotingPeriodMessage {
             stock_locate,
@@ -743,13 +673,14 @@ impl Parser {
 
     #[inline]
     fn parse_add_order(&self, data: &[u8], pos: &mut usize) -> Result<AddOrderMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let order_reference_number = self.read_u64(data, pos)?;
         let buy_sell_indicator = self.read_u8(data, pos)? as char;
         let shares = self.read_u32(data, pos)?;
         let stock = self.read_stock(data, pos)?;
+        let end = stock.iter().position(|&b| b == b' ').unwrap_or(8);
+        std::str::from_utf8(&stock[..end])
+            .map_err(|_| ParseError::InvalidUtf8 { field: "stock" })?;
 
         Ok(AddOrderMessage {
             stock_locate,
@@ -769,15 +700,20 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<AddOrderWithMpidMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let order_reference_number = self.read_u64(data, pos)?;
         let buy_sell_indicator = self.read_u8(data, pos)? as char;
         let shares = self.read_u32(data, pos)?;
         let stock = self.read_stock(data, pos)?;
+        let end_stock = stock.iter().position(|&b| b == b' ').unwrap_or(8);
+        std::str::from_utf8(&stock[..end_stock])
+            .map_err(|_| ParseError::InvalidUtf8 { field: "stock" })?;
         let price = self.read_u32(data, pos)?;
         let attribution = self.read_mpid(data, pos)?;
+        let end_attr = attribution.iter().position(|&b| b == b' ').unwrap_or(4);
+        std::str::from_utf8(&attribution[..end_attr]).map_err(|_| ParseError::InvalidUtf8 {
+            field: "attribution",
+        })?;
 
         Ok(AddOrderWithMpidMessage {
             stock_locate,
@@ -794,10 +730,11 @@ impl Parser {
 
     #[inline]
     fn parse_order_executed(&self, data: &[u8], pos: &mut usize) -> Result<OrderExecutedMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(OrderExecutedMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             order_reference_number: self.read_u64(data, pos)?,
             executed_shares: self.read_u32(data, pos)?,
             match_number: self.read_u64(data, pos)?,
@@ -810,10 +747,11 @@ impl Parser {
         data: &[u8],
         pos: &mut usize,
     ) -> Result<OrderExecutedWithPriceMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(OrderExecutedWithPriceMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             order_reference_number: self.read_u64(data, pos)?,
             executed_shares: self.read_u32(data, pos)?,
             match_number: self.read_u64(data, pos)?,
@@ -824,10 +762,11 @@ impl Parser {
 
     #[inline]
     fn parse_order_cancel(&self, data: &[u8], pos: &mut usize) -> Result<OrderCancelMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(OrderCancelMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             order_reference_number: self.read_u64(data, pos)?,
             cancelled_shares: self.read_u32(data, pos)?,
         })
@@ -835,20 +774,22 @@ impl Parser {
 
     #[inline]
     fn parse_order_delete(&self, data: &[u8], pos: &mut usize) -> Result<OrderDeleteMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(OrderDeleteMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             order_reference_number: self.read_u64(data, pos)?,
         })
     }
 
     #[inline]
     fn parse_order_replace(&self, data: &[u8], pos: &mut usize) -> Result<OrderReplaceMessage> {
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         Ok(OrderReplaceMessage {
-            stock_locate: self.read_u16(data, pos)?,
-            tracking_number: self.read_u16(data, pos)?,
-            timestamp: self.read_timestamp(data, pos)?,
+            stock_locate,
+            tracking_number,
+            timestamp,
             original_order_reference_number: self.read_u64(data, pos)?,
             new_order_reference_number: self.read_u64(data, pos)?,
             shares: self.read_u32(data, pos)?,
@@ -858,9 +799,7 @@ impl Parser {
 
     #[inline]
     fn parse_trade(&self, data: &[u8], pos: &mut usize) -> Result<TradeMessage> {
-        let stock_locate = self.read_u16(data, pos)?;
-        let tracking_number = self.read_u16(data, pos)?;
-        let timestamp = self.read_timestamp(data, pos)?;
+        let (stock_locate, tracking_number, timestamp) = parse_common_header!(self, data, pos)?;
         let order_reference_number = self.read_u64(data, pos)?;
         let buy_sell_indicator = self.read_u8(data, pos)? as char;
         let shares = self.read_u32(data, pos)?;
