@@ -122,7 +122,9 @@ pub fn bench_spsc(data: &[u8]) -> Result<(u64, f64, f64)> {
         }
     }
 
-    producer_handle.join().expect("Producer thread panicked");
+    producer_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Producer thread panicked"))?;
 
     let wall = t0.elapsed();
     let mps = total_messages as f64 / wall.as_secs_f64() / 1_000_000.0;
@@ -262,7 +264,9 @@ pub fn run_spsc(data: &[u8]) -> Result<()> {
         }
     }
 
-    producer_handle.join().expect("Producer thread panicked");
+    producer_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Producer thread panicked"))?;
 
     let wall = t0.elapsed();
     let mps = total_messages as f64 / wall.as_secs_f64() / 1_000_000.0;
