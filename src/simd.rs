@@ -2,6 +2,7 @@
 use std::arch::x86_64::*;
 
 use memchr::memchr;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 const SIMD_UNKNOWN: u8 = 0;
@@ -13,6 +14,7 @@ const AVX512_UNAVAILABLE: u8 = 2;
 
 static SIMD_STATUS: AtomicU8 = AtomicU8::new(SIMD_UNKNOWN);
 static AVX512_STATUS: AtomicU8 = AtomicU8::new(AVX512_UNKNOWN);
+static BEST_SIMD_LEVEL: OnceLock<SimdLevel> = OnceLock::new();
 
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 #[inline]
@@ -1189,8 +1191,13 @@ pub fn scan_boundaries_auto(data: &[u8], max_messages: usize) -> BoundaryResult 
 }
 
 #[inline]
+fn get_simd_level() -> SimdLevel {
+    *BEST_SIMD_LEVEL.get_or_init(|| simd_info().best_available())
+}
+
+#[inline]
 pub fn best_simd_level() -> SimdLevel {
-    simd_info().best_available()
+    get_simd_level()
 }
 
 #[inline]
@@ -1198,7 +1205,7 @@ pub fn dispatch_simd_level<R, F>(f: F) -> R
 where
     F: FnOnce(SimdLevel) -> R,
 {
-    let level = best_simd_level();
+    let level = get_simd_level();
     f(level)
 }
 
