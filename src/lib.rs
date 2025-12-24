@@ -17,7 +17,7 @@ pub use builder::{ParserBuilder, ParserConfig, ParserMode};
 pub use concurrent::{
     AdaptiveBatchConfig, AdaptiveBatchMetrics, AdaptiveBatchProcessor, AdaptiveStrategy,
     AtomicStats, BatchProcessor, ConcurrentParser, ParallelParser, ParserMetrics,
-    ParserStatsSnapshot, SpscParser, SpscQueue, UnifiedParser, WorkStealingParser, WorkerStats,
+    ParserStatsSnapshot, SpscParser, UnifiedParser, WorkStealingParser, WorkerStats,
     WorkerStatsSnapshot,
 };
 pub use config::Config;

@@ -127,158 +127,32 @@ fn pin_current_thread() {
 #[inline]
 fn pin_current_thread() {}
 
-const SPSC_BUFFER_SIZE: usize = 4096;
-const CACHE_LINE_SIZE: usize = 64;
-
-pub struct SpscQueue<T> {
-    buffer: Box<[std::cell::UnsafeCell<Option<T>>; SPSC_BUFFER_SIZE]>,
-    _pad1: [u8; CACHE_LINE_SIZE],
-    head: AtomicUsize,
-    _pad2: [u8; CACHE_LINE_SIZE - std::mem::size_of::<AtomicUsize>()],
-    tail: AtomicUsize,
-    _pad3: [u8; CACHE_LINE_SIZE - std::mem::size_of::<AtomicUsize>()],
-    cached_head: AtomicUsize,
-    cached_tail: AtomicUsize,
-}
-
-unsafe impl<T: Send> Send for SpscQueue<T> {}
-unsafe impl<T: Send> Sync for SpscQueue<T> {}
-
-impl<T> SpscQueue<T> {
-    pub fn new() -> Self {
-        let buffer: Box<[std::cell::UnsafeCell<Option<T>>; SPSC_BUFFER_SIZE]> = {
-            let mut v = Vec::with_capacity(SPSC_BUFFER_SIZE);
-            for _ in 0..SPSC_BUFFER_SIZE {
-                v.push(std::cell::UnsafeCell::new(None));
-            }
-            v.try_into()
-                .expect("Vec length matches SPSC_BUFFER_SIZE; conversion cannot fail")
-        };
-        Self {
-            buffer,
-            _pad1: [0; CACHE_LINE_SIZE],
-            head: AtomicUsize::new(0),
-            _pad2: [0; CACHE_LINE_SIZE - std::mem::size_of::<AtomicUsize>()],
-            tail: AtomicUsize::new(0),
-            _pad3: [0; CACHE_LINE_SIZE - std::mem::size_of::<AtomicUsize>()],
-            cached_head: AtomicUsize::new(0),
-            cached_tail: AtomicUsize::new(0),
-        }
-    }
-
-    #[inline(always)]
-    pub fn push(&self, value: T) -> std::result::Result<(), T> {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let next_tail = (tail + 1) % SPSC_BUFFER_SIZE;
-
-        let cached = self.cached_head.load(Ordering::Relaxed);
-        if next_tail == cached {
-            let head = self.head.load(Ordering::Acquire);
-            self.cached_head.store(head, Ordering::Relaxed);
-            if next_tail == head {
-                return Err(value);
-            }
-        }
-
-        unsafe {
-            *self.buffer[tail].get() = Some(value);
-        }
-        self.tail.store(next_tail, Ordering::Release);
-        Ok(())
-    }
-
-    #[inline(always)]
-    pub fn pop(&self) -> Option<T> {
-        let head = self.head.load(Ordering::Relaxed);
-
-        let cached = self.cached_tail.load(Ordering::Relaxed);
-        if head == cached {
-            let tail = self.tail.load(Ordering::Acquire);
-            self.cached_tail.store(tail, Ordering::Relaxed);
-            if head == tail {
-                return None;
-            }
-        }
-
-        let value = unsafe { (*self.buffer[head].get()).take() };
-        self.head
-            .store((head + 1) % SPSC_BUFFER_SIZE, Ordering::Release);
-        value
-    }
-
-    #[inline]
-    pub fn pop_batch(&self, batch: &mut Vec<T>, max_count: usize) -> usize {
-        let mut count = 0;
-        while count < max_count {
-            match self.pop() {
-                Some(v) => {
-                    batch.push(v);
-                    count += 1;
-                }
-                None => break,
-            }
-        }
-        count
-    }
-
-    #[inline(always)]
-    pub fn is_empty(&self) -> bool {
-        self.head.load(Ordering::Relaxed) == self.tail.load(Ordering::Relaxed)
-    }
-
-    #[inline(always)]
-    pub fn len(&self) -> usize {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Relaxed);
-        if tail >= head {
-            tail - head
-        } else {
-            SPSC_BUFFER_SIZE - head + tail
-        }
-    }
-
-    #[inline(always)]
-    pub fn capacity(&self) -> usize {
-        SPSC_BUFFER_SIZE - 1
-    }
-
-    #[inline(always)]
-    pub fn is_full(&self) -> bool {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let next_tail = (tail + 1) % SPSC_BUFFER_SIZE;
-        next_tail == self.head.load(Ordering::Acquire)
-    }
-}
-
-impl<T> Default for SpscQueue<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 pub struct SpscParser {
-    input_queue: Arc<SpscQueue<WorkUnit>>,
-    output_queue: Arc<SpscQueue<Vec<Message>>>,
+    input_sender: Sender<WorkUnit>,
+    output_receiver: Receiver<Vec<Message>>,
     worker: Option<JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
     stats: Arc<AtomicStats>,
     start_time: Instant,
     has_data: Arc<(Mutex<bool>, Condvar)>,
+    pending: Arc<AtomicUsize>,
 }
 
 impl SpscParser {
     pub fn new() -> Self {
-        let input_queue: Arc<SpscQueue<WorkUnit>> = Arc::new(SpscQueue::new());
-        let output_queue: Arc<SpscQueue<Vec<Message>>> = Arc::new(SpscQueue::new());
+        let (input_sender, input_receiver) = bounded(4096);
+        let (output_sender, output_receiver) = bounded(4096);
         let shutdown = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(AtomicStats::new());
         let has_data = Arc::new((Mutex::new(false), Condvar::new()));
+        let pending = Arc::new(AtomicUsize::new(0));
 
-        let input_q = Arc::clone(&input_queue);
-        let output_q = Arc::clone(&output_queue);
+        let input_r = input_receiver;
+        let output_s = output_sender;
         let shutdown_flag = Arc::clone(&shutdown);
         let stats_ref = Arc::clone(&stats);
         let has_data_ref = Arc::clone(&has_data);
+        let pending_ref = Arc::clone(&pending);
 
         let worker = thread::spawn(move || {
             pin_current_thread();
@@ -286,7 +160,8 @@ impl SpscParser {
 
             loop {
                 if shutdown_flag.load(Ordering::Acquire) {
-                    while let Some(work_unit) = input_q.pop() {
+                    while let Ok(work_unit) = input_r.try_recv() {
+                        pending_ref.fetch_sub(1, Ordering::Relaxed);
                         let (data_slice, data_len) = match &work_unit {
                             WorkUnit::Owned(v) => (v.as_slice(), v.len()),
                             WorkUnit::ArcSlice(arc, start, end) => {
@@ -298,7 +173,7 @@ impl SpscParser {
                         {
                             stats_ref.add_messages(msgs.len() as u64);
                             stats_ref.add_bytes(data_len as u64);
-                            let _ = output_q.push(msgs);
+                            let _ = output_s.try_send(msgs);
                             *has_data_ref.0.lock() = true;
                             has_data_ref.1.notify_one();
                         }
@@ -306,8 +181,9 @@ impl SpscParser {
                     break;
                 }
 
-                match input_q.pop() {
-                    Some(work_unit) => {
+                match input_r.try_recv() {
+                    Ok(work_unit) => {
+                        pending_ref.fetch_sub(1, Ordering::Relaxed);
                         let (data_slice, data_len) = match &work_unit {
                             WorkUnit::Owned(v) => (v.as_slice(), v.len()),
                             WorkUnit::ArcSlice(arc, start, end) => {
@@ -321,13 +197,13 @@ impl SpscParser {
                                     Ok(msgs) => {
                                         stats_ref.add_messages(msgs.len() as u64);
                                         stats_ref.add_bytes(data_len as u64);
-                                        let _ = output_q.push(msgs);
+                                        let _ = output_s.try_send(msgs);
                                         *has_data_ref.0.lock() = true;
                                         has_data_ref.1.notify_one();
                                     }
                                     Err(_) => {
                                         stats_ref.add_error();
-                                        let _ = output_q.push(Vec::new());
+                                        let _ = output_s.try_send(Vec::new());
                                         *has_data_ref.0.lock() = true;
                                         has_data_ref.1.notify_one();
                                     }
@@ -335,14 +211,14 @@ impl SpscParser {
                             }
                             Err(_) => {
                                 stats_ref.add_error();
-                                let _ = output_q.push(Vec::new());
+                                let _ = output_s.try_send(Vec::new());
                                 *has_data_ref.0.lock() = true;
                                 has_data_ref.1.notify_one();
                             }
                         }
                         parser.reset();
                     }
-                    None => {
+                    Err(_) => {
                         for _ in 0..32 {
                             std::hint::spin_loop();
                         }
@@ -353,13 +229,14 @@ impl SpscParser {
         });
 
         Self {
-            input_queue,
-            output_queue,
+            input_sender,
+            output_receiver,
             worker: Some(worker),
             shutdown,
             stats,
             start_time: Instant::now(),
             has_data,
+            pending,
         }
     }
 
@@ -372,38 +249,38 @@ impl SpscParser {
                 data.len()
             )));
         }
-        self.input_queue
-            .push(WorkUnit::ArcSlice(data, start, end))
-            .map_err(|d| {
-                let size = match &d {
+        self.input_sender
+            .try_send(WorkUnit::ArcSlice(data, start, end))
+            .map_err(|e| {
+                let size = match e.into_inner() {
                     WorkUnit::Owned(v) => v.len(),
                     WorkUnit::ArcSlice(_, s, e) => e - s,
                 };
-                crate::error::ParseError::BufferOverflow {
-                    size,
-                    max: SPSC_BUFFER_SIZE,
-                }
-            })
+                crate::error::ParseError::BufferOverflow { size, max: 4096 }
+            })?;
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 }
 
 impl ConcurrentParser for SpscParser {
     fn submit(&self, data: Vec<u8>) -> Result<()> {
-        self.input_queue.push(WorkUnit::Owned(data)).map_err(|d| {
-            let size = match &d {
-                WorkUnit::Owned(v) => v.len(),
-                WorkUnit::ArcSlice(_, s, e) => e - s,
-            };
-            crate::error::ParseError::BufferOverflow {
-                size,
-                max: SPSC_BUFFER_SIZE,
-            }
-        })
+        self.input_sender
+            .try_send(WorkUnit::Owned(data))
+            .map_err(|e| {
+                let size = match e.into_inner() {
+                    WorkUnit::Owned(v) => v.len(),
+                    WorkUnit::ArcSlice(_, s, e) => e - s,
+                };
+                crate::error::ParseError::BufferOverflow { size, max: 4096 }
+            })?;
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     fn recv(&self) -> Option<Vec<Message>> {
         loop {
-            if let Some(msgs) = self.output_queue.pop() {
+            if let Ok(msgs) = self.output_receiver.try_recv() {
                 return Some(msgs);
             }
             if self.shutdown.load(Ordering::Relaxed) {
@@ -421,11 +298,11 @@ impl ConcurrentParser for SpscParser {
     }
 
     fn try_recv(&self) -> Option<Vec<Message>> {
-        self.output_queue.pop()
+        self.output_receiver.try_recv().ok()
     }
 
     fn pending(&self) -> usize {
-        self.input_queue.len()
+        self.pending.load(Ordering::Relaxed)
     }
 
     fn messages_parsed(&self) -> u64 {

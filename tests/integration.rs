@@ -1,6 +1,6 @@
 mod fixtures;
 
-use lunary::{ParseError, Parser};
+use lunary::{BatchProcessor, ParseError, Parser, ZeroCopyParser};
 
 #[test]
 fn test_message_boundary_detection() {
@@ -95,4 +95,70 @@ fn test_invalid_utf8_mpid() {
         Err(ParseError::InvalidUtf8 { field }) if field == "mpid" => (),
         _ => panic!("Expected InvalidUtf8 for mpid, got {:?}", result),
     }
+}
+
+#[test]
+fn test_truncated_data_parsing() {
+    let buf = fixtures::standard_fixture();
+    for truncate_pct in [10, 50, 90] {
+        let truncate_at = buf.len() * truncate_pct / 100;
+        let truncated = &buf[..truncate_at];
+
+        let result = std::panic::catch_unwind(|| {
+            let mut parser = ZeroCopyParser::new(truncated);
+            parser.count()
+        });
+        assert!(
+            result.is_ok(),
+            "ZeroCopyParser panicked on {}% truncated data",
+            truncate_pct
+        );
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut processor = BatchProcessor::new(1024);
+            processor.process_all(truncated)
+        }));
+        assert!(
+            result.is_ok(),
+            "BatchProcessor panicked on {}% truncated data",
+            truncate_pct
+        );
+    }
+}
+
+#[test]
+fn test_corrupted_message_types() {
+    let mut buf = fixtures::standard_fixture();
+    // Corrupt every 10th message type
+    let mut offset = 0;
+    let mut message_index = 0;
+    while offset + 3 < buf.len() && message_index < 100 {
+        let len = u16::from_be_bytes([buf[offset], buf[offset + 1]]) as usize;
+        if len == 0 || offset + 2 + len > buf.len() {
+            break;
+        }
+        if message_index % 10 == 0 {
+            buf[offset + 2] = 0xFF; // Invalid message type
+        }
+        message_index += 1;
+        offset += 2 + len;
+    }
+
+    let result = std::panic::catch_unwind(|| {
+        let mut parser = ZeroCopyParser::new(&buf);
+        parser.count()
+    });
+    assert!(
+        result.is_ok(),
+        "ZeroCopyParser panicked on corrupted message types"
+    );
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut processor = BatchProcessor::new(1024);
+        processor.process_all(&buf)
+    }));
+    assert!(
+        result.is_ok(),
+        "BatchProcessor panicked on corrupted message types"
+    );
 }

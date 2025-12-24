@@ -275,7 +275,7 @@ pub fn run_spsc(data: &[u8]) -> Result<()> {
         "[spsc] Parsed {} messages in {:?} => {:.2} M msg/sec",
         total_messages, wall, mps
     );
-    println!("  Lock-free SPSC queue, concurrent producer/consumer");
+    println!("  Crossbeam channel SPSC, concurrent producer/consumer");
 
     Ok(())
 }
