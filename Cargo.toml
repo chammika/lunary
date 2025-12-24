@@ -29,6 +29,7 @@ crossbeam-deque = "0.8"
 core_affinity = { version = "0.8", optional = true }
 tempfile = "3.23.0"
 zerocopy = { version = "0.8", features = ["derive"] }
+memchr = "2.7"
 clap = "4.0"
 parking_lot = "0.12"
 

@@ -1,5 +1,6 @@
 use crate::error::ParseError;
 use crate::zerocopy_types::MessageHeaderRaw;
+use memchr::memchr;
 use std::marker::PhantomData;
 use zerocopy::Ref;
 
@@ -36,7 +37,7 @@ impl<'a> Stock<'a> {
 
     #[inline(always)]
     pub fn as_str(&self) -> Result<&str, ParseError> {
-        let end = self.data.iter().position(|&b| b == b' ').unwrap_or(8);
+        let end = memchr(b' ', self.data).unwrap_or(8);
         std::str::from_utf8(&self.data[..end])
             .map_err(|_| ParseError::InvalidUtf8 { field: "stock" })
     }
@@ -74,7 +75,7 @@ impl<'a> Mpid<'a> {
 
     #[inline(always)]
     pub fn as_str(&self) -> Result<&str, ParseError> {
-        let end = self.data.iter().position(|&b| b == b' ').unwrap_or(4);
+        let end = memchr(b' ', self.data).unwrap_or(4);
         std::str::from_utf8(&self.data[..end])
             .map_err(|_| ParseError::InvalidUtf8 { field: "mpid" })
     }
