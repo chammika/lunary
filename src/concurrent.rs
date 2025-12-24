@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::error::Result;
+use crate::error::{ParseError, Result};
 use crate::messages::Message;
 use crate::parser::Parser;
 
@@ -133,6 +133,7 @@ pub struct SpscParser {
     worker: Option<JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
     stats: Arc<AtomicStats>,
+    last_error: Arc<Mutex<Option<ParseError>>>,
     start_time: Instant,
     has_data: Arc<(Mutex<bool>, Condvar)>,
     pending: Arc<AtomicUsize>,
@@ -144,6 +145,7 @@ impl SpscParser {
         let (output_sender, output_receiver) = bounded(4096);
         let shutdown = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(AtomicStats::new());
+        let last_error = Arc::new(Mutex::new(None));
         let has_data = Arc::new((Mutex::new(false), Condvar::new()));
         let pending = Arc::new(AtomicUsize::new(0));
 
@@ -151,6 +153,7 @@ impl SpscParser {
         let output_s = output_sender;
         let shutdown_flag = Arc::clone(&shutdown);
         let stats_ref = Arc::clone(&stats);
+        let last_error_ref = Arc::clone(&last_error);
         let has_data_ref = Arc::clone(&has_data);
         let pending_ref = Arc::clone(&pending);
 
@@ -191,7 +194,10 @@ impl SpscParser {
                                         *has_data_ref.0.lock() = true;
                                         has_data_ref.1.notify_one();
                                     }
-                                    Err(_) => {
+                                    Err(e) => {
+                                        #[cfg(debug_assertions)]
+                                        eprintln!("SPSC parser: parse error: {:?}", e);
+                                        *last_error_ref.lock() = Some(e);
                                         stats_ref.add_error();
                                         let _ = output_s.try_send(Vec::new());
                                         *has_data_ref.0.lock() = true;
@@ -199,7 +205,10 @@ impl SpscParser {
                                     }
                                 }
                             }
-                            Err(_) => {
+                            Err(e) => {
+                                #[cfg(debug_assertions)]
+                                eprintln!("SPSC parser: parse_all error: {:?}", e);
+                                *last_error_ref.lock() = Some(e);
                                 stats_ref.add_error();
                                 let _ = output_s.try_send(Vec::new());
                                 *has_data_ref.0.lock() = true;
@@ -224,6 +233,7 @@ impl SpscParser {
             worker: Some(worker),
             shutdown,
             stats,
+            last_error,
             start_time: Instant::now(),
             has_data,
             pending,
@@ -304,6 +314,16 @@ impl ConcurrentParser for SpscParser {
     }
 }
 
+impl SpscParser {
+    pub fn errors(&self) -> u64 {
+        self.stats.errors()
+    }
+
+    pub fn last_error(&self) -> Option<ParseError> {
+        self.last_error.lock().clone()
+    }
+}
+
 impl ParserMetrics for SpscParser {
     fn stats_snapshot(&self) -> ParserStatsSnapshot {
         ParserStatsSnapshot {
@@ -345,6 +365,7 @@ pub struct ParallelParser {
     bytes_processed: Arc<AtomicU64>,
     worker_stats: Arc<Vec<WorkerStats>>,
     errors: Arc<AtomicU64>,
+    last_error: Arc<Mutex<Option<ParseError>>>,
     start_time: Instant,
 }
 
@@ -371,6 +392,7 @@ impl ParallelParser {
         let messages_parsed = Arc::new(AtomicU64::new(0));
         let bytes_processed = Arc::new(AtomicU64::new(0));
         let errors = Arc::new(AtomicU64::new(0));
+        let last_error = Arc::new(Mutex::new(None));
 
         let worker_stats: Arc<Vec<WorkerStats>> =
             Arc::new((0..num_workers).map(WorkerStats::new).collect());
@@ -384,6 +406,7 @@ impl ParallelParser {
             let msg_counter = Arc::clone(&messages_parsed);
             let byte_counter = Arc::clone(&bytes_processed);
             let err_counter = Arc::clone(&errors);
+            let last_error = Arc::clone(&last_error);
             let stats = Arc::clone(&worker_stats);
 
             let handle = thread::spawn(move || {
@@ -407,14 +430,20 @@ impl ParallelParser {
                                                 .record_batch(msg_count, data_len as u64);
                                             let _ = tx.send(msgs);
                                         }
-                                        Err(_) => {
+                                        Err(e) => {
+                                            #[cfg(debug_assertions)]
+                                            eprintln!("Worker {}: parse error: {:?}", worker_id, e);
+                                            *last_error.lock() = Some(e);
                                             err_counter.fetch_add(1, Ordering::Relaxed);
                                             stats[worker_id].record_error();
                                             let _ = tx.send(Vec::new());
                                         }
                                     }
                                 }
-                                Err(_) => {
+                                Err(e) => {
+                                    #[cfg(debug_assertions)]
+                                    eprintln!("Worker {}: parse_all error: {:?}", worker_id, e);
+                                    *last_error.lock() = Some(e);
                                     err_counter.fetch_add(1, Ordering::Relaxed);
                                     stats[worker_id].record_error();
                                     let _ = tx.send(Vec::new());
@@ -439,6 +468,7 @@ impl ParallelParser {
             bytes_processed,
             worker_stats,
             errors,
+            last_error,
             start_time: Instant::now(),
         }
     }
@@ -505,6 +535,10 @@ impl ParallelParser {
 
     pub fn errors(&self) -> u64 {
         self.errors.load(Ordering::Relaxed)
+    }
+
+    pub fn last_error(&self) -> Option<ParseError> {
+        self.last_error.lock().clone()
     }
 
     pub fn worker_stats(&self) -> Vec<WorkerStatsSnapshot> {
@@ -1525,6 +1559,7 @@ pub struct WorkStealingParser {
     result_receiver: Receiver<Vec<Message>>,
     shutdown: Arc<AtomicBool>,
     stats: Arc<AtomicStats>,
+    last_error: Arc<Mutex<Option<ParseError>>>,
     worker_stats: Arc<Vec<WorkerStats>>,
     start_time: Instant,
 }
@@ -1536,6 +1571,7 @@ impl WorkStealingParser {
         let (result_sender, result_receiver) = bounded::<Vec<Message>>(num_workers * 4);
         let shutdown = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(AtomicStats::new());
+        let last_error = Arc::new(Mutex::new(None));
         let worker_stats: Arc<Vec<WorkerStats>> =
             Arc::new((0..num_workers).map(WorkerStats::new).collect());
 
@@ -1561,6 +1597,7 @@ impl WorkStealingParser {
             let tx = result_sender.clone();
             let shutdown_flag = Arc::clone(&shutdown);
             let stats_ref = Arc::clone(&stats);
+            let last_error_ref = Arc::clone(&last_error);
             let ws = Arc::clone(&worker_stats);
 
             let handle = thread::spawn(move || {
@@ -1596,14 +1633,26 @@ impl WorkStealingParser {
                                             ws[worker_id].record_batch(msg_count, data_len as u64);
                                             let _ = tx.send(msgs);
                                         }
-                                        Err(_) => {
+                                        Err(e) => {
+                                            #[cfg(debug_assertions)]
+                                            eprintln!(
+                                                "Work-stealing worker {}: parse error: {:?}",
+                                                worker_id, e
+                                            );
+                                            *last_error_ref.lock() = Some(e);
                                             stats_ref.add_error();
                                             ws[worker_id].record_error();
                                             let _ = tx.send(Vec::new());
                                         }
                                     }
                                 }
-                                Err(_) => {
+                                Err(e) => {
+                                    #[cfg(debug_assertions)]
+                                    eprintln!(
+                                        "Work-stealing worker {}: parse_all error: {:?}",
+                                        worker_id, e
+                                    );
+                                    *last_error_ref.lock() = Some(e);
                                     stats_ref.add_error();
                                     ws[worker_id].record_error();
                                     let _ = tx.send(Vec::new());
@@ -1629,6 +1678,7 @@ impl WorkStealingParser {
             result_receiver,
             shutdown,
             stats,
+            last_error,
             worker_stats,
             start_time: Instant::now(),
         }
@@ -1735,6 +1785,12 @@ impl ConcurrentParser for WorkStealingParser {
 
     fn bytes_processed(&self) -> u64 {
         self.stats.bytes()
+    }
+}
+
+impl WorkStealingParser {
+    pub fn last_error(&self) -> Option<ParseError> {
+        self.last_error.lock().clone()
     }
 }
 
