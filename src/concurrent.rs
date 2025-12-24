@@ -140,7 +140,7 @@ pub struct SpscParser {
 
 impl SpscParser {
     pub fn new() -> Self {
-        let (input_sender, input_receiver) = bounded(4096);
+        let (input_sender, input_receiver) = bounded::<WorkUnit>(4096);
         let (output_sender, output_receiver) = bounded(4096);
         let shutdown = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(AtomicStats::new());
@@ -162,12 +162,7 @@ impl SpscParser {
                 if shutdown_flag.load(Ordering::Acquire) {
                     while let Ok(work_unit) = input_r.try_recv() {
                         pending_ref.fetch_sub(1, Ordering::Relaxed);
-                        let (data_slice, data_len) = match &work_unit {
-                            WorkUnit::Owned(v) => (v.as_slice(), v.len()),
-                            WorkUnit::ArcSlice(arc, start, end) => {
-                                (&arc[*start..*end], end - start)
-                            }
-                        };
+                        let (data_slice, data_len) = work_unit.as_slice();
                         if let Ok(iter) = parser.parse_all(data_slice)
                             && let Ok(msgs) = iter.collect::<crate::error::Result<Vec<Message>>>()
                         {
@@ -184,12 +179,7 @@ impl SpscParser {
                 match input_r.try_recv() {
                     Ok(work_unit) => {
                         pending_ref.fetch_sub(1, Ordering::Relaxed);
-                        let (data_slice, data_len) = match &work_unit {
-                            WorkUnit::Owned(v) => (v.as_slice(), v.len()),
-                            WorkUnit::ArcSlice(arc, start, end) => {
-                                (&arc[*start..*end], end - start)
-                            }
-                        };
+                        let (data_slice, data_len) = work_unit.as_slice();
                         match parser.parse_all(data_slice) {
                             Ok(iter) => {
                                 let messages: Result<Vec<Message>> = iter.collect();
@@ -361,6 +351,15 @@ pub struct ParallelParser {
 enum WorkUnit {
     Owned(Vec<u8>),
     ArcSlice(Arc<[u8]>, usize, usize),
+}
+
+impl WorkUnit {
+    fn as_slice(&self) -> (&[u8], usize) {
+        match self {
+            WorkUnit::Owned(v) => (v.as_slice(), v.len()),
+            WorkUnit::ArcSlice(arc, start, end) => (&arc[*start..*end], end - start),
+        }
+    }
 }
 
 impl ParallelParser {
