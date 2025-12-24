@@ -814,7 +814,10 @@ pub unsafe fn memcpy_nontemporal(dst: *mut u8, src: *const u8, len: usize) {
 /// - `dst` is valid for writes of `len` bytes
 /// - the regions do not overlap
 pub unsafe fn memcpy_nontemporal(dst: *mut u8, src: *const u8, len: usize) {
-    std::ptr::copy_nonoverlapping(src, dst, len);
+    // SAFETY: Caller guarantees above conditions
+    unsafe {
+        std::ptr::copy_nonoverlapping(src, dst, len);
+    }
 }
 
 #[inline]
