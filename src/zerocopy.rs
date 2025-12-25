@@ -361,54 +361,73 @@ impl<'a> ZeroCopyParser<'a> {
 
     #[inline(always)]
     pub fn parse_next(&mut self) -> Option<ZeroCopyMessage<'a>> {
-        let data_len = self.data.len();
-        let pos = self.position;
+        loop {
+            let data_len = self.data.len();
+            let pos = self.position;
 
-        if pos + 3 > data_len {
-            return None;
-        }
+            if pos + 3 > data_len {
+                return None;
+            }
 
-        let length = unsafe {
-            let ptr = self.data.as_ptr().add(pos);
-            u16::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 2]))
-        } as usize;
+            let length = unsafe {
+                let ptr = self.data.as_ptr().add(pos);
+                u16::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 2]))
+            } as usize;
 
-        let total_size = length + 2;
-        let msg_end = pos + total_size;
+            let total_size = length + 2;
+            let msg_end = pos + total_size;
 
-        if msg_end > data_len {
-            return None;
-        }
+            if msg_end <= pos {
+                self.position = pos + 1;
+                continue;
+            }
 
-        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-        {
-            if msg_end + 64 <= data_len {
-                unsafe {
-                    use std::arch::x86_64::*;
-                    _mm_prefetch(self.data.as_ptr().add(msg_end) as *const i8, _MM_HINT_T0);
+            if msg_end > data_len {
+                return None;
+            }
+
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+            {
+                if msg_end + 64 <= data_len {
+                    unsafe {
+                        use std::arch::x86_64::*;
+                        _mm_prefetch(self.data.as_ptr().add(msg_end) as *const i8, _MM_HINT_T0);
+                    }
                 }
             }
-        }
 
-        let msg_type = self.data[pos + 2];
-        let header_start = pos + 3;
-        let header_end = header_start + 10;
+            let msg_type = self.data[pos + 2];
 
-        if header_end > data_len {
-            return None;
-        }
+            if !crate::simd::is_valid_message_type(msg_type) {
+                self.position = msg_end;
+                continue;
+            }
 
-        let payload_start = header_end;
+            let header_start = pos + 3;
+            let header_end = header_start + 10;
 
-        if let Ok((hdr_ref, _)) =
-            Ref::<&[u8], MessageHeaderRaw>::from_prefix(&self.data[header_start..header_end])
-        {
-            let payload = &self.data[payload_start..msg_end];
+            if header_end > msg_end {
+                self.position = msg_end;
+                continue;
+            }
+
+            if header_end > data_len {
+                return None;
+            }
+
+            let payload_start = header_end;
+
+            if let Ok((hdr_ref, _)) =
+                Ref::<&[u8], MessageHeaderRaw>::from_prefix(&self.data[header_start..header_end])
+            {
+                let payload = &self.data[payload_start..msg_end];
+                self.position = msg_end;
+                return Some(ZeroCopyMessage::new(msg_type, hdr_ref, payload));
+            }
+
             self.position = msg_end;
-            return Some(ZeroCopyMessage::new(msg_type, hdr_ref, payload));
+            continue;
         }
-
-        None
     }
 
     #[inline]
@@ -741,14 +760,14 @@ mod tests {
         let mut data = Vec::new();
         for _ in 0..2 {
             data.extend(&[0u8, 11u8]);
-            data.push(1u8);
+            data.push(b'S');
             data.extend(&[0u8; 10]);
         }
 
         let mut parser = ZeroCopyParser::new(&data);
         let arcs = parser.parse_all_arc();
         assert_eq!(arcs.len(), 2);
-        assert_eq!(arcs[0].msg_type, 1u8);
+        assert_eq!(arcs[0].msg_type, b'S');
         assert!(Arc::strong_count(&arcs[0].payload) >= 1);
     }
 }
