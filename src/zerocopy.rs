@@ -374,17 +374,18 @@ impl<'a> ZeroCopyParser<'a> {
                 u16::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 2]))
             } as usize;
 
-            let total_size = length + 2;
-            let msg_end = pos + total_size;
+            let total_size = match length.checked_add(2) {
+                Some(s) => s,
+                None => {
+                    self.position = data_len;
+                    return None;
+                }
+            };
 
-            if msg_end <= pos {
-                self.position = pos + 1;
-                continue;
-            }
-
-            if msg_end > data_len {
-                return None;
-            }
+            let msg_end = match pos.checked_add(total_size) {
+                Some(e) if e <= data_len => e,
+                _ => return None,
+            };
 
             #[cfg(all(feature = "simd", target_arch = "x86_64"))]
             {
