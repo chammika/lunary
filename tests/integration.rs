@@ -156,3 +156,44 @@ fn test_corrupted_message_types() {
         "BatchProcessor panicked on corrupted message types"
     );
 }
+
+#[test]
+fn test_large_buffer_no_data_loss() {
+    use lunary::Config;
+
+    let config = Config::new().with_max_buffer_size(100 * 1024); // 100 KB
+    let mut parser = Parser::with_config(config);
+
+    let mut total_messages = 0;
+    let mut data = vec![];
+
+    for _ in 0..50 {
+        let payload = vec![b'X'; 35];
+        let len = 36u16; // 1 + 35
+        data.extend_from_slice(&len.to_be_bytes());
+        data.push(b'A');
+        data.extend_from_slice(&payload);
+        total_messages += 1;
+    }
+
+    let chunk_size = 10 * 1024;
+    let mut pos = 0;
+    while pos < data.len() {
+        let end = (pos + chunk_size).min(data.len());
+        parser.feed_data(&data[pos..end]).unwrap();
+        pos = end;
+
+        while parser.parse_next().unwrap().is_some() {
+            total_messages -= 1;
+        }
+    }
+
+    while parser.parse_next().unwrap().is_some() {
+        total_messages -= 1;
+    }
+
+    assert_eq!(
+        total_messages, 0,
+        "All messages should be parsed without data loss"
+    );
+}

@@ -173,13 +173,6 @@ impl Parser {
             self.buffer.truncate(new_len);
             self.position = 0;
         }
-        let compact_threshold = self.config.max_buffer_size / 2;
-        if self.buffer.len() > compact_threshold {
-            let keep_size = compact_threshold / 2;
-            let start_pos = self.buffer.len() - keep_size;
-            self.buffer.copy_within(start_pos.., 0);
-            self.buffer.truncate(keep_size);
-        }
     }
 
     #[inline(always)]
