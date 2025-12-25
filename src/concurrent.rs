@@ -137,6 +137,7 @@ pub struct SpscParser {
     start_time: Instant,
     has_data: Arc<(Mutex<bool>, Condvar)>,
     pending: Arc<AtomicUsize>,
+    input_available: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl SpscParser {
@@ -148,6 +149,7 @@ impl SpscParser {
         let last_error = Arc::new(Mutex::new(None));
         let has_data = Arc::new((Mutex::new(false), Condvar::new()));
         let pending = Arc::new(AtomicUsize::new(0));
+        let input_available = Arc::new((Mutex::new(false), Condvar::new()));
 
         let input_r = input_receiver;
         let output_s = output_sender;
@@ -156,6 +158,7 @@ impl SpscParser {
         let last_error_ref = Arc::clone(&last_error);
         let has_data_ref = Arc::clone(&has_data);
         let pending_ref = Arc::clone(&pending);
+        let input_available_ref = Arc::clone(&input_available);
 
         let worker = thread::spawn(move || {
             pin_current_thread();
@@ -218,10 +221,28 @@ impl SpscParser {
                         parser.reset();
                     }
                     Err(_) => {
-                        for _ in 0..32 {
+                        for _ in 0..128 {
+                            if pending_ref.load(Ordering::Acquire) > 0
+                                || shutdown_flag.load(Ordering::Acquire)
+                            {
+                                break;
+                            }
                             std::hint::spin_loop();
                         }
-                        std::thread::yield_now();
+
+                        if pending_ref.load(Ordering::Acquire) == 0
+                            && !shutdown_flag.load(Ordering::Acquire)
+                        {
+                            let mut guard = input_available_ref.0.lock();
+                            while pending_ref.load(Ordering::Acquire) == 0
+                                && !shutdown_flag.load(Ordering::Acquire)
+                            {
+                                let _ = input_available_ref
+                                    .1
+                                    .wait_for(&mut guard, Duration::from_micros(200));
+                            }
+                            *guard = false;
+                        }
                     }
                 }
             }
@@ -237,6 +258,7 @@ impl SpscParser {
             start_time: Instant::now(),
             has_data,
             pending,
+            input_available,
         }
     }
 
@@ -259,6 +281,8 @@ impl SpscParser {
                 crate::error::ParseError::BufferOverflow { size, max: 4096 }
             })?;
         self.pending.fetch_add(1, Ordering::Relaxed);
+        *self.input_available.0.lock() = true;
+        self.input_available.1.notify_one();
         Ok(())
     }
 }
@@ -275,6 +299,8 @@ impl ConcurrentParser for SpscParser {
                 crate::error::ParseError::BufferOverflow { size, max: 4096 }
             })?;
         self.pending.fetch_add(1, Ordering::Relaxed);
+        *self.input_available.0.lock() = true;
+        self.input_available.1.notify_one();
         Ok(())
     }
 
