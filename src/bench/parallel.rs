@@ -51,7 +51,9 @@ pub fn bench_worksteal(data: &[u8]) -> Result<(u64, f64, f64)> {
     let chunks = split_into_chunks(data, chunk_size);
 
     for (start, end) in &chunks {
-        parser.submit_arc(Arc::clone(&data_arc), *start, *end);
+        parser
+            .submit_arc(Arc::clone(&data_arc), *start, *end)
+            .unwrap();
     }
 
     let mut total_messages = 0;

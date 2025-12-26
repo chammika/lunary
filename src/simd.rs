@@ -934,7 +934,7 @@ unsafe fn memcpy_nontemporal_avx2(dst: *mut u8, src: *const u8, len: usize) {
 ///
 /// Caller must ensure:
 /// - `src` is valid for reads of `len` bytes
-/// - `dst` is valid for writes of `len` bytes and is 16-byte aligned
+/// - `dst` is valid for writes of `len` bytes
 /// - the regions do not overlap
 pub unsafe fn memcpy_nontemporal(dst: *mut u8, src: *const u8, len: usize) {
     unsafe {

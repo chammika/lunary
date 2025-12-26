@@ -309,7 +309,7 @@ impl ConcurrentParser for SpscParser {
             if let Ok(msgs) = self.output_receiver.try_recv() {
                 return Some(msgs);
             }
-            if self.shutdown.load(Ordering::Relaxed) {
+            if self.shutdown.load(Ordering::Acquire) {
                 return None;
             }
             let (lock, cvar) = &*self.has_data;
@@ -1062,7 +1062,8 @@ impl AdaptiveBatchProcessor {
         }
         let n = self.throughput_count as f64;
         let mean = self.throughput_sum / n;
-        (self.throughput_sum_sq / n) - (mean * mean)
+        let variance = (self.throughput_sum_sq / n) - (mean * mean);
+        variance.max(0.0)
     }
 
     #[inline]
@@ -1714,11 +1715,17 @@ impl WorkStealingParser {
         self.injector.push(WorkUnit::Owned(data));
     }
 
-    pub fn submit_arc(&self, data: Arc<[u8]>, start: usize, end: usize) {
+    pub fn submit_arc(&self, data: Arc<[u8]>, start: usize, end: usize) -> Result<()> {
         if start >= end || end > data.len() {
-            return;
+            return Err(ParseError::InvalidArgument(format!(
+                "invalid range {}..{} for data of length {}",
+                start,
+                end,
+                data.len()
+            )));
         }
         self.injector.push(WorkUnit::ArcSlice(data, start, end));
+        Ok(())
     }
 
     pub fn submit_chunks(&self, data: Arc<[u8]>, chunk_size: usize) -> usize {

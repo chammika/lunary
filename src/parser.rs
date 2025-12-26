@@ -212,12 +212,18 @@ impl Parser {
         }
 
         let message_type = remaining[2];
-        let expected = EXPECTED_LENGTHS[message_type as usize] as usize;
-        if expected != 0 && expected != length {
+        let expected = EXPECTED_LENGTHS[message_type as usize];
+        if expected == NO_VALIDATION {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "Warning: no expected length for message type 0x{:02X}",
+                message_type
+            );
+        } else if expected as usize != length {
             return Err(ParseError::LengthMismatch {
                 msg_type: message_type,
                 declared: length,
-                expected,
+                expected: expected as usize,
             });
         }
 
@@ -486,6 +492,10 @@ impl Parser {
             data[*pos + 5],
         ]);
         *pos += 6;
+        const MAX_VALID_TIMESTAMP: u64 = 86_400_000_000_000;
+        if self.config.strict_validation && value > MAX_VALID_TIMESTAMP {
+            return Err(ParseError::InvalidTimestamp { value });
+        }
         Ok(value)
     }
 
@@ -917,8 +927,10 @@ impl Parser {
     }
 }
 
+const NO_VALIDATION: u16 = u16::MAX;
+
 const EXPECTED_LENGTHS: [u16; 256] = {
-    let mut arr = [0u16; 256];
+    let mut arr = [NO_VALIDATION; 256];
     arr[b'S' as usize] = 12;
     arr[b'R' as usize] = 39;
     arr[b'H' as usize] = 25;
