@@ -64,7 +64,7 @@ pub fn bench_worksteal(data: &[u8]) -> Result<(u64, f64, f64)> {
     }
 
     let wall = t0.elapsed();
-    parser.shutdown();
+    let _ = parser.shutdown();
 
     let (elapsed_ms, mps) = calculate_throughput(total_messages as u64, wall);
     Ok((total_messages as u64, elapsed_ms, mps))
@@ -208,7 +208,7 @@ pub fn run_worksteal(data: &[u8]) -> Result<()> {
         stats.errors()
     );
 
-    parser.shutdown();
+    let _ = parser.shutdown();
     Ok(())
 }
 
@@ -355,6 +355,6 @@ pub fn run_worker_stats(data: &[u8]) -> Result<()> {
         println!("Load balance: {:.1}% (100% = perfect)", balance);
     }
 
-    parser.shutdown();
+    let _ = parser.shutdown();
     Ok(())
 }

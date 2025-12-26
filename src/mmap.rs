@@ -94,15 +94,17 @@ impl ChunkedMmapParser {
         self.mmap.len().div_ceil(self.chunk_size)
     }
 
-    pub fn parse_chunk(&self, chunk_idx: usize) -> Result<Vec<ZeroCopyMessage<'_>>> {
+    pub fn parse_chunk(&self, chunk_idx: usize) -> Result<(Vec<ZeroCopyMessage<'_>>, usize)> {
         let start = chunk_idx * self.chunk_size;
         if start >= self.mmap.len() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
         let end = (start + self.chunk_size).min(self.mmap.len());
         let chunk = &self.mmap[start..end];
         let mut parser = ZeroCopyParser::new(chunk);
-        Ok(parser.parse_all().collect())
+        let messages: Vec<_> = parser.parse_all().collect();
+        let consumed = parser.position();
+        Ok((messages, consumed))
     }
 }
 

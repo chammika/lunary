@@ -683,6 +683,27 @@ fn num_cpus() -> usize {
         .unwrap_or(4)
 }
 
+fn estimate_message_count(data: &[u8]) -> usize {
+    let mut count = 0;
+    let mut offset = 0;
+    let sample_size = data.len().min(4096);
+
+    while offset + 2 <= sample_size {
+        let len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+        if len == 0 || offset + len + 2 > sample_size {
+            break;
+        }
+        offset += len + 2;
+        count += 1;
+    }
+
+    if offset > 0 && count > 0 {
+        (data.len() / offset) * count
+    } else {
+        data.len() / 25
+    }
+}
+
 pub struct BatchProcessor {
     parser: Parser,
     batch_size: usize,
@@ -714,7 +735,7 @@ impl BatchProcessor {
 
     pub fn process_all(&mut self, data: &[u8]) -> Result<Vec<Message>> {
         self.parser.feed_data(data)?;
-        let estimated = data.len() / 32;
+        let estimated = estimate_message_count(data);
         let mut all_messages = Vec::with_capacity(estimated);
 
         loop {
@@ -1778,13 +1799,36 @@ impl WorkStealingParser {
         self.worker_stats.len()
     }
 
-    pub fn shutdown(self) {
-        // Use Release ordering to ensure all previous writes are visible
+    pub fn shutdown(self) -> Result<Vec<Vec<Message>>> {
         self.shutdown.store(true, Ordering::Release);
+
+        let mut remaining = Vec::new();
+        while let crossbeam_deque::Steal::Success(work) = self.injector.steal() {
+            let mut parser = Parser::new();
+            let data_slice = match &work {
+                WorkUnit::Owned(v) => v.as_slice(),
+                WorkUnit::ArcSlice(arc, start, end) => &arc[*start..*end],
+            };
+            if let Ok(iter) = parser.parse_all(data_slice)
+                && let Ok(msgs) = iter.collect::<Result<Vec<_>>>()
+                && !msgs.is_empty()
+            {
+                remaining.push(msgs);
+            }
+        }
+
         drop(self.result_sender);
         for worker in self.workers {
             let _ = worker.join();
         }
+
+        while let Ok(msgs) = self.result_receiver.try_recv() {
+            if !msgs.is_empty() {
+                remaining.push(msgs);
+            }
+        }
+
+        Ok(remaining)
     }
 }
 

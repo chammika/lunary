@@ -141,8 +141,8 @@ impl Parser {
             });
         }
 
-        let compact_threshold = self.config.max_buffer_size / 2;
-        if current_len > compact_threshold {
+        let consumed_ratio = self.position as f64 / current_len.max(1) as f64;
+        if consumed_ratio > 0.5 && self.position > 0 {
             self.compact_buffer();
         }
 
@@ -921,9 +921,15 @@ impl Parser {
     }
 
     #[inline]
-    pub fn reset(&mut self) {
+    pub fn clear_buffer(&mut self) {
         self.buffer.clear();
         self.position = 0;
+    }
+
+    #[inline]
+    pub fn reset(&mut self) {
+        self.clear_buffer();
+        self.reset_stats();
     }
 }
 
