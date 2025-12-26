@@ -120,6 +120,7 @@ pub struct ZeroCopyMessage<'a> {
 }
 
 impl<'a> ZeroCopyMessage<'a> {
+    #[allow(dead_code)]
     #[inline(always)]
     fn read_be_u16_unchecked(payload: &[u8], offset: usize) -> u16 {
         debug_assert!(offset + 2 <= payload.len());
@@ -127,6 +128,7 @@ impl<'a> ZeroCopyMessage<'a> {
         u16::from_be_bytes(bytes)
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     fn read_be_u32_unchecked(payload: &[u8], offset: usize) -> u32 {
         debug_assert!(offset + 4 <= payload.len());
@@ -139,6 +141,7 @@ impl<'a> ZeroCopyMessage<'a> {
         u32::from_be_bytes(bytes)
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     fn read_be_u64_unchecked(payload: &[u8], offset: usize) -> u64 {
         debug_assert!(offset + 8 <= payload.len());
@@ -195,6 +198,9 @@ impl<'a> ZeroCopyMessage<'a> {
         self.payload[offset]
     }
 
+    /// NOTE: This method uses `debug_assert!` for bounds checking and is unchecked in
+    /// release builds. For safe behavior prefer `read_u16_checked` which returns `Option<u16>`
+    /// or use `read_u16_unchecked_ptr` inside an `unsafe` block when you know the offset is valid.
     #[inline(always)]
     pub fn read_u16(&self, offset: usize) -> u16 {
         debug_assert!(offset + 2 <= self.payload.len());
@@ -204,6 +210,9 @@ impl<'a> ZeroCopyMessage<'a> {
         }
     }
 
+    /// NOTE: This method uses `debug_assert!` for bounds checking and is unchecked in
+    /// release builds. For safe behavior prefer `read_u32_checked` which returns `Option<u32>`
+    /// or use `read_u32_unchecked_ptr` inside an `unsafe` block when you know the offset is valid.
     #[inline(always)]
     pub fn read_u32(&self, offset: usize) -> u32 {
         debug_assert!(offset + 4 <= self.payload.len());
@@ -213,6 +222,9 @@ impl<'a> ZeroCopyMessage<'a> {
         }
     }
 
+    /// NOTE: This method uses `debug_assert!` for bounds checking and is unchecked in
+    /// release builds. For safe behavior prefer `read_u64_checked` which returns `Option<u64>`
+    /// or use `read_u64_unchecked_ptr` inside an `unsafe` block when you know the offset is valid.
     #[inline(always)]
     pub fn read_u64(&self, offset: usize) -> u64 {
         debug_assert!(offset + 8 <= self.payload.len());
@@ -224,29 +236,74 @@ impl<'a> ZeroCopyMessage<'a> {
 
     #[inline(always)]
     pub fn try_read_u16(&self, offset: usize) -> Option<u16> {
-        let end = offset.checked_add(2)?;
-        if end > self.payload.len() {
-            return None;
-        }
-        Some(self.read_u16_unchecked(offset))
+        self.read_u16_checked(offset)
     }
 
     #[inline(always)]
     pub fn try_read_u32(&self, offset: usize) -> Option<u32> {
-        let end = offset.checked_add(4)?;
-        if end > self.payload.len() {
-            return None;
-        }
-        Some(self.read_u32_unchecked(offset))
+        self.read_u32_checked(offset)
     }
 
     #[inline(always)]
     pub fn try_read_u64(&self, offset: usize) -> Option<u64> {
+        self.read_u64_checked(offset)
+    }
+
+    #[inline(always)]
+    pub fn read_u16_checked(&self, offset: usize) -> Option<u16> {
+        let end = offset.checked_add(2)?;
+        if end > self.payload.len() {
+            return None;
+        }
+        Some(unsafe { self.read_u16_unchecked_ptr(offset) })
+    }
+
+    #[inline(always)]
+    pub fn read_u32_checked(&self, offset: usize) -> Option<u32> {
+        let end = offset.checked_add(4)?;
+        if end > self.payload.len() {
+            return None;
+        }
+        Some(unsafe { self.read_u32_unchecked_ptr(offset) })
+    }
+
+    #[inline(always)]
+    pub fn read_u64_checked(&self, offset: usize) -> Option<u64> {
         let end = offset.checked_add(8)?;
         if end > self.payload.len() {
             return None;
         }
-        Some(self.read_u64_unchecked(offset))
+        Some(unsafe { self.read_u64_unchecked_ptr(offset) })
+    }
+
+    /// # Safety
+    /// Calling this method with `offset + 2 > self.payload.len()` is undefined behavior.
+    #[inline(always)]
+    pub unsafe fn read_u16_unchecked_ptr(&self, offset: usize) -> u16 {
+        unsafe {
+            let ptr = self.payload.as_ptr().add(offset);
+            u16::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 2]))
+        }
+    }
+
+    /// # Safety
+    /// Calling this method with `offset + 4 > self.payload.len()` is undefined behavior.
+    #[inline(always)]
+    pub unsafe fn read_u32_unchecked_ptr(&self, offset: usize) -> u32 {
+        unsafe {
+            let ptr = self.payload.as_ptr().add(offset);
+            u32::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 4]))
+        }
+    }
+
+    /// # Safety
+    /// Calling this method with `offset + 8 > self.payload.len()` is undefined behavior.
+    #[inline(always)]
+    pub unsafe fn read_u64_unchecked_ptr(&self, offset: usize) -> u64 {
+        unsafe {
+            let ptr = self.payload.as_ptr().add(offset);
+            u64::from_be_bytes(std::ptr::read_unaligned(ptr as *const [u8; 8]))
+        }
     }
 
     #[inline(always)]
@@ -264,22 +321,22 @@ impl<'a> ZeroCopyMessage<'a> {
         self.payload[offset] as char
     }
 
+    #[deprecated(note = "use `read_u16_unchecked_ptr` (unsafe) or `read_u16_checked` (safe)")]
     #[inline(always)]
     pub fn read_u16_unchecked(&self, offset: usize) -> u16 {
-        debug_assert!(offset + 2 <= self.payload.len());
-        Self::read_be_u16_unchecked(self.payload, offset)
+        unsafe { self.read_u16_unchecked_ptr(offset) }
     }
 
+    #[deprecated(note = "use `read_u32_unchecked_ptr` (unsafe) or `read_u32_checked` (safe)")]
     #[inline(always)]
     pub fn read_u32_unchecked(&self, offset: usize) -> u32 {
-        debug_assert!(offset + 4 <= self.payload.len());
-        Self::read_be_u32_unchecked(self.payload, offset)
+        unsafe { self.read_u32_unchecked_ptr(offset) }
     }
 
+    #[deprecated(note = "use `read_u64_unchecked_ptr` (unsafe) or `read_u64_checked` (safe)")]
     #[inline(always)]
     pub fn read_u64_unchecked(&self, offset: usize) -> u64 {
-        debug_assert!(offset + 8 <= self.payload.len());
-        Self::read_be_u64_unchecked(self.payload, offset)
+        unsafe { self.read_u64_unchecked_ptr(offset) }
     }
 
     #[inline(always)]
@@ -748,12 +805,14 @@ mod tests {
         let header_data = [0u8; 10];
         let header = Ref::from_bytes(&header_data[..]).unwrap();
         let msg = ZeroCopyMessage::new(0, header, &data);
-        assert_eq!(msg.read_u16_unchecked(0), 0x0001);
-        assert_eq!(msg.read_u16_unchecked(2), 0x0203);
-        assert_eq!(msg.read_u32_unchecked(0), 0x00010203);
-        assert_eq!(msg.read_u32_unchecked(2), 0x02030405);
-        assert_eq!(msg.read_u64_unchecked(0), 0x0001020304050607);
-        assert_eq!(msg.read_u64_unchecked(2), 0x0203040506070809);
+        unsafe {
+            assert_eq!(msg.read_u16_unchecked_ptr(0), 0x0001);
+            assert_eq!(msg.read_u16_unchecked_ptr(2), 0x0203);
+            assert_eq!(msg.read_u32_unchecked_ptr(0), 0x00010203);
+            assert_eq!(msg.read_u32_unchecked_ptr(2), 0x02030405);
+            assert_eq!(msg.read_u64_unchecked_ptr(0), 0x0001020304050607);
+            assert_eq!(msg.read_u64_unchecked_ptr(2), 0x0203040506070809);
+        }
     }
 
     #[test]
