@@ -1,6 +1,6 @@
 [package]
 name = "lunary"
-version = "0.2.2"
+version = "0.2.4"
 authors = ["Lunyn <contact@lunyn.com>"]
 edition = "2024"
 license = "AGPL-3.0-or-later"
@@ -27,9 +27,10 @@ crossbeam-channel = "0.5"
 crossbeam-utils = "0.8"
 crossbeam-deque = "0.8"
 core_affinity = { version = "0.8", optional = true }
-tempfile = "3.23.0"
 zerocopy = { version = "0.8", features = ["derive"] }
+memchr = "2.7"
 clap = "4.0"
+parking_lot = "0.12"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 mimalloc = { version = "0.1", optional = true }
@@ -39,6 +40,9 @@ mimalloc = { version = "0.1", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false }
+arbitrary = "1"
+libfuzzer-sys = "0.4"
+tempfile = "3.23.0"
 
 [features]
 default = ["simd"]

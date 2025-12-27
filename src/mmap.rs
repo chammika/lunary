@@ -2,6 +2,7 @@ use memmap2::Mmap;
 use std::fs::File;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::error::Result;
 use crate::zerocopy::{ZeroCopyMessage, ZeroCopyParser};
@@ -10,9 +11,31 @@ pub struct MmapParser {
     mmap: Mmap,
 }
 
+const MAX_MMAP_SIZE: u64 = 16 * 1024 * 1024 * 1024;
+
 impl MmapParser {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = File::open(path)?;
+        let file = File::open(&path)?;
+        let metadata = file.metadata()?;
+
+        if metadata.len() > MAX_MMAP_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "File too large for mmap: {} bytes (max {})",
+                    metadata.len(),
+                    MAX_MMAP_SIZE
+                ),
+            ));
+        }
+
+        if metadata.len() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Cannot mmap empty file",
+            ));
+        }
+
         let mmap = unsafe { Mmap::map(&file)? };
         Ok(Self { mmap })
     }
@@ -39,7 +62,11 @@ impl MmapParser {
 
     pub fn parse_all(&self) -> Vec<ZeroCopyMessage<'_>> {
         let mut parser = self.parser();
-        parser.parse_all()
+        parser.parse_all().collect()
+    }
+
+    pub fn into_shared(self) -> MmapParserShared {
+        MmapParserShared::from(self)
     }
 
     pub fn count_messages(&self) -> usize {
@@ -89,15 +116,60 @@ impl ChunkedMmapParser {
         self.mmap.len().div_ceil(self.chunk_size)
     }
 
-    pub fn parse_chunk(&self, chunk_idx: usize) -> Result<Vec<ZeroCopyMessage<'_>>> {
+    pub fn parse_chunk(&self, chunk_idx: usize) -> Result<(Vec<ZeroCopyMessage<'_>>, usize)> {
         let start = chunk_idx * self.chunk_size;
         if start >= self.mmap.len() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
         let end = (start + self.chunk_size).min(self.mmap.len());
         let chunk = &self.mmap[start..end];
         let mut parser = ZeroCopyParser::new(chunk);
-        Ok(parser.parse_all())
+        let messages: Vec<_> = parser.parse_all().collect();
+        let consumed = parser.position();
+        Ok((messages, consumed))
+    }
+}
+
+pub struct MmapParserShared {
+    mmap: Arc<Mmap>,
+}
+
+impl MmapParserShared {
+    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let file = File::open(path)?;
+        let mmap = unsafe { Mmap::map(&file)? };
+        Ok(Self {
+            mmap: Arc::new(mmap),
+        })
+    }
+
+    pub fn data(&self) -> &[u8] {
+        self.mmap.as_ref()
+    }
+
+    pub fn len(&self) -> usize {
+        self.mmap.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.mmap.is_empty()
+    }
+
+    pub fn parser(&self) -> ZeroCopyParser<'_> {
+        ZeroCopyParser::new(self.mmap.as_ref())
+    }
+
+    pub fn parse_all(&self) -> Vec<ZeroCopyMessage<'_>> {
+        let mut parser = self.parser();
+        parser.parse_all().collect()
+    }
+}
+
+impl From<MmapParser> for MmapParserShared {
+    fn from(p: MmapParser) -> Self {
+        Self {
+            mmap: Arc::new(p.mmap),
+        }
     }
 }
 
